@@ -1,0 +1,17 @@
+[package]
+name = "ccmoneta"
+version = "0.1.0"
+edition = "2024"
+description = "Claude Code usage limits and spend in the terminal, a status bar, and Claude Code's status line"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/dmelo/ccmoneta"
+
+[dependencies]
+chrono = "0.4.45"
+crossterm = "0.29.0"
+gethostname = "1.1.0"
+ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+toml = "1.1.6"

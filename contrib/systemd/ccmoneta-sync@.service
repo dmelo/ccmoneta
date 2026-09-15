@@ -1,0 +1,12 @@
+[Unit]
+Description=Mirror recent Claude Code transcripts from %i for ccmoneta
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ccmoneta sync %i
+# Optional: any running ccmoneta surface already syncs configured hosts that are
+# due. This keeps a mirror current while none is running. A host named here but
+# absent from the config file is synced with its name as the ssh destination.
+# ssh runs with BatchMode=yes, so it needs a key it can use without prompting.
+Environment=HOME=%h

@@ -1,0 +1,12 @@
+[Unit]
+Description=Mirror Claude Code transcripts from %i every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+# No Persistent=: it only affects OnCalendar= timers (systemd.timer(5)). This
+# one counts from its last run, so after a sleep the next run is at most one
+# period away.
+
+[Install]
+WantedBy=timers.target
