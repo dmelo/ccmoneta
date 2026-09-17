@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref supersedes the run it replaces.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # rustup is preinstalled on the runner, so the toolchain needs no
+      # third-party action: fewer moving parts to trust in a public repo.
+      - name: Install stable with rustfmt and clippy
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+          rustup component add rustfmt clippy
+          rustc --version
+          cargo --version
+
+      - name: Cache the registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # The sync tests skip themselves when rsync is missing, which would leave
+      # the run green while testing nothing. Fail here instead.
+      - name: rsync must be present
+        run: rsync --version | head -1
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # The tests use a throwaway HOME, cache and config, a fake ccusage and a
+      # fake ssh, and assert that no health check is ever due, so this reaches
+      # no network.
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Release build
+        run: cargo build --release --locked
+
+      # The repo is public: tests and docs use /home/me, never a real one.
+      - name: No real home paths in the tree
+        run: |
+          if git grep -nI '/home/' -- . | grep -v '/home/me'; then
+            echo "::error::a home path other than /home/me is committed; use neutral paths"
+            exit 1
+          fi
