@@ -88,7 +88,7 @@ Sync is the exception. Each host spaces its own attempts (see the policy above),
 Unchanged in substance from today:
 
 - ccusage prices the transcripts; ccmoneta carries no pricing table. A hard-coded table is what made CCMeter bill Opus 5 at Sonnet rates without warning.
-- The daily series is one `ccusage daily --json --breakdown` run per host, in parallel, with `CLAUDE_CONFIG_DIR` set to that host's directory alone, summed by ccmoneta. Per-host totals therefore add up to the header by construction. The session report, used only for per-project figures, came to about $290 more than the daily totals over the same 30 days, which is why it is not used for totals.
+- The daily series is one `ccusage daily --json --breakdown` run per host, in parallel, with `CLAUDE_CONFIG_DIR` set to that host's directory alone, summed by ccmoneta. Per-host totals therefore add up to the header by construction. The session report, used only for per-project figures, came out materially higher than the daily totals over the same window, which is why it is not used for totals.
 - Verified ccusage behaviour relied on: `CLAUDE_CONFIG_DIR` takes a comma-separated list and rejects `:`; a path that does not exist is skipped silently; a window with no usage exits 0 with an empty `daily` list.
 - `CCMONETA_CCUSAGE` overrides the ccusage executable. The integration tests use it to run against a fake ccusage with fixed output, so behaviour is testable without anyone's real transcripts.
 

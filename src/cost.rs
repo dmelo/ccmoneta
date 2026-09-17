@@ -281,9 +281,9 @@ fn label_sessions(
 /// sessions are a single run across all hosts, used only for projects. Summing
 /// per-host daily reports makes the per-host totals add up to the header by
 /// construction, which the session report did not: its per-host figures came
-/// to about $290 more than the daily totals over the same 30 days. Single runs
-/// took 1.33s for this machine's daily report, 1.13s for a mirrored host's
-/// 916 MB, and 1.65s for sessions across both.
+/// out materially higher than the daily totals over the same window. A single
+/// run of either report takes on the order of a second per host, which is why
+/// they run in parallel rather than one after another.
 pub fn gather(days: i64) -> Result<Costs, String> {
     // A `days`-day window includes today, so it starts `days - 1` days back;
     // starting `days` back would quietly make every "30d" figure cover 31.
@@ -389,7 +389,7 @@ pub fn gather(days: i64) -> Result<Costs, String> {
     // Projects are best-effort: a failure here should not cost us the rest of
     // the dashboard, so a broken session report just leaves the pane empty.
     // They come from the session report, so they need not add up to the daily
-    // totals; over the same 30 days that report came to about $290 more.
+    // totals; over the same window that report came out higher.
     if let Ok(raw) = ccusage(&["session", "--json", "--since", &since], &hosts)
         && let Ok(report) = serde_json::from_slice::<SessionReport>(&raw)
     {

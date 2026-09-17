@@ -331,7 +331,7 @@ fn draw_spend(frame: &mut Frame, area: Rect, app: &App) {
     app.max_scroll.set(max_scroll);
     let scroll = app.scroll.min(max_scroll);
 
-    // "Sep 12 Fri" (10) + 2 + bar + 2 + "$116.29" right-aligned in 9.
+    // "Sep 12 Fri" (10) + 2 + bar + 2 + "$123.45" right-aligned in 9.
     let bar_w = (inner.width as usize).saturating_sub(23).max(4);
     let cap = scale_cap(&c.daily);
     let today = chrono::Local::now().date_naive();

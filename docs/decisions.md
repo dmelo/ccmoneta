@@ -26,8 +26,10 @@ Moneta was the Roman goddess whose temple housed the mint, giving English *money
 
 Matches the author's other published tool. The text is the standard MIT licence with the copyright holder named.
 
-## Private repository, for now (2026-09-15)
+## Public repository (2026-09-17)
 
-Published to a private GitHub repo as a single squashed commit, because the development history's commit messages carry real machine names and spend figures. What keeps that safe is the `history` branch staying local (see ../CLAUDE.md).
+Private at first (2026-09-15), because the development history's commit messages carry real machine names and spend figures. Made public on 2026-09-17, after two scans of the published tree found no secrets, credentials, IP addresses, home paths, project names or real host names, in the files or in the commit messages; path examples in tests are `/home/me/...` and hosts are `desk` and `laptop`.
 
-**Open question:** whether to make the repository public. Nothing found so far blocks it — the published tree was scanned and holds no secrets, credentials, IP addresses, home paths, project names or real host names, and the squashed commit message has none either. What deserves a deliberate look first: `docs/design.md` and code comments quote measurements taken from the author's own usage (transcript volumes, run times, the size of one sync, a per-report difference in dollars), which are not identifying but do describe how heavily the author uses Claude Code.
+The one thing the second scan did turn up was the open question the private-repo entry had left: four places quoted measurements taken from the author's own machines — a day's spend used as a column-width example, the size of one mirrored host's transcripts, single-run timings, and the dollar difference between the two ccusage reports. None identified anyone, but together they described how heavily the author uses Claude Code, and the repo's own rule in ../CLAUDE.md forbids real spend figures. Each was replaced with the finding it supported rather than deleted: the session report still "came out materially higher", runs still take "on the order of a second per host", and the column arithmetic uses a made-up `$123.45`.
+
+**What keeps this safe going forward:** the `history` branch must never be pushed, and a public remote makes an accidental `git push --all` or `--mirror` worse than it was before. Push `main` by name.
