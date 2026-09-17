@@ -6,6 +6,7 @@ Claude Code usage limits and spend, in the terminal, in a status bar, and in Cla
 
 - **Limits:** the plan's 5-hour and 7-day usage percentages, with reset times. These come from Anthropic, through the JSON Claude Code passes to its status line, or through `GET /api/oauth/usage` when no status line has reported recently.
 - **Spend:** what the usage would have cost at API prices, today, over 7 days and over 30 days, per model, per project and per machine. [ccusage](https://github.com/ccusage/ccusage) computes it from Claude Code's transcripts; ccmoneta keeps no pricing table of its own.
+- **Health:** whether Claude is operational, from [status.claude.com](https://status.claude.com), and whether this machine's Claude Code is the newest release on its channel. Both stay out of sight until there is something to say.
 
 ## Three surfaces, each correct on its own
 
@@ -46,7 +47,7 @@ ccmoneta doctor               # checks everything below, and says how to fix wha
 
 ## Dashboard
 
-`q` or `Esc` quits, `r` refreshes now, `↑`/`↓` or `k`/`j` scroll the day list. It shows limits, a row per day of spend with the figure printed, spend per model and per project, and each mirrored machine's sync age. The footer says how old the spend figures are.
+`q` or `Esc` quits, `r` refreshes now, `↑`/`↓` or `k`/`j` scroll the day list. It shows limits, service status and the installed Claude Code version, a row per day of spend with the figure printed, spend per model and per project, and each mirrored machine's sync age. The footer says how old the spend figures are.
 
 ## Configuration
 
@@ -81,10 +82,9 @@ program = "i3blocks"    # the bar process sent SIGRTMIN+signal; at most 15 chara
 ```
 
 - `bar.terminal` defaults to `$TERMINAL`, then `i3-sensible-terminal`, then `x-terminal-emulator`. `i3-sensible-terminal` has its own search order, which may not pick the terminal you use.
-- `health` is quiet by design: the bar block and the status line show a `⚠` marker **only** when Claude is not fully operational or a newer Claude Code has been published. The detail is always in the bar's tooltip, the dashboard's health pane, and `ccmoneta doctor`.
-- `health.max_age_seconds` has a floor of 300. Both lookups hit someone else's service, from every machine running this.
-
 - `bar.signal` and `bar.program` must be set together, because a real-time signal terminates a process that does not handle it. The bar also needs the matching `signal=` (i3blocks) or `"signal":` (Waybar) on the block; `ccmoneta install` prints both.
+- `health` is quiet by design: the bar block and the status line show a `⚠` marker **only** when Claude is not fully operational or a newer Claude Code has been published. The detail is always in the bar's tooltip, the dashboard's health pane, and `ccmoneta doctor`.
+- `health.max_age_seconds` has a floor of 300. Both lookups hit someone else's service, from every machine running this. Setting `status` and `version` to false turns the checks off entirely, and then no surface mentions health at all.
 
 ## Counting more than one machine
 

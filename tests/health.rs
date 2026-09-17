@@ -119,6 +119,17 @@ impl Sandbox {
             .unwrap();
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
+
+    /// The health job writes its state the moment it attempts a run, so the
+    /// absence of these files proves no surface in this test reached the status
+    /// page or the version lookup. These tests must stay offline.
+    fn health_job_ever_ran(&self) -> bool {
+        self.root.join("cache/ccmoneta/jobs/health.json").exists()
+            || self
+                .root
+                .join("cache/ccmoneta/jobs/health.spawned")
+                .exists()
+    }
 }
 
 impl Drop for Sandbox {
@@ -156,6 +167,11 @@ fn an_outage_and_an_old_install_reach_every_surface() {
     assert!(
         hook.contains("⚠ claude outage · cc 2.1.280"),
         "hook: {hook}"
+    );
+
+    assert!(
+        !sb.health_job_ever_ran(),
+        "a fresh snapshot must not be refreshed"
     );
 
     let doctor = sb.doctor();
@@ -215,6 +231,11 @@ fn a_healthy_check_stays_out_of_the_way() {
         "{waybar}"
     );
 
+    assert!(
+        !sb.health_job_ever_ran(),
+        "a fresh snapshot must not be refreshed"
+    );
+
     let doctor = sb.doctor();
     assert!(
         doctor.contains("ok    status: All Systems Operational"),
@@ -244,4 +265,8 @@ fn health_can_be_turned_off_entirely() {
     let full = sb.bar("i3blocks").lines().next().unwrap().to_string();
     assert!(!full.contains('⚠'), "bar: {full}");
     assert!(!sb.hook().contains('⚠'), "hook");
+    assert!(
+        !sb.health_job_ever_ran(),
+        "checks are off, so nothing may poll"
+    );
 }
