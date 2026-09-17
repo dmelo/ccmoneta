@@ -4,13 +4,18 @@ Claude Code usage limits and spend, on three surfaces (dashboard, status bar blo
 
 ## Branches
 
-- `main` is the published branch: one squashed commit plus whatever follows it. It is pushed to a **private** GitHub repo.
+- **Every change reaches `main` through a pull request.** Never commit on `main`, and never push to it directly — branch off `main`, push the branch, open the PR, and let CI run on it. This holds for one-line fixes and for documentation as much as for code.
+- `main` is the published branch: one squashed commit plus whatever follows it. The GitHub repo is **public**.
 - `history` is local only and **must never be pushed**. It holds the full development history, whose commit messages contain the maintainer's real machine names and spend figures. That is exactly what the squash kept off GitHub.
 - Never merge `history` into `main`, and never push `--all` or `--mirror`.
 
 ## What must not enter the repo
 
 The repo is published, so no commit message, comment, test or doc may contain real host names, home paths, project names or spend figures. Tests use neutral names (`desk`, `laptop`) and example paths (`-home-me-code-project`). Made-up figures like `$12.34` are fine.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --locked`, a release build, a check that `rsync` is installed (without it the sync tests skip themselves and the run is green while testing nothing), and a guard that no home path other than `/home/me` is committed. Match a run to the commit's sha rather than reading "the latest run".
 
 ## Tests
 
