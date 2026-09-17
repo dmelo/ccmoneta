@@ -21,7 +21,7 @@ Use any of them, or all. Each one renders from a shared cache and, when a value 
 
 - Linux. The dashboard and the status line hook use nothing Linux-specific but have not been tested elsewhere.
 - [ccusage](https://github.com/ccusage/ccusage), for spend: `npm install -g ccusage`.
-- `curl`, to poll the usage endpoint when the status line is not feeding limits.
+- `curl`, to poll the usage endpoint when the status line is not feeding limits, and to check Claude's status page and the published Claude Code version.
 - `ssh` and `rsync`, only to count other machines.
 - A Rust toolchain to build.
 
@@ -60,6 +60,11 @@ window_days = 30        # days of history, counting today
 [limits]
 max_age_seconds = 900   # poll the usage endpoint once the cached limits are this old
 
+[health]
+max_age_seconds = 900   # re-check status.claude.com and the published version this often
+status = true           # check https://status.claude.com
+version = true          # compare the installed Claude Code against its release channel
+
 [sync]
 refresh_seconds = 600   # sync a host once its last attempt is this old
 days = 31               # copy transcripts modified within this many days
@@ -76,6 +81,9 @@ program = "i3blocks"    # the bar process sent SIGRTMIN+signal; at most 15 chara
 ```
 
 - `bar.terminal` defaults to `$TERMINAL`, then `i3-sensible-terminal`, then `x-terminal-emulator`. `i3-sensible-terminal` has its own search order, which may not pick the terminal you use.
+- `health` is quiet by design: the bar block and the status line show a `⚠` marker **only** when Claude is not fully operational or a newer Claude Code has been published. The detail is always in the bar's tooltip, the dashboard's health pane, and `ccmoneta doctor`.
+- `health.max_age_seconds` has a floor of 300. Both lookups hit someone else's service, from every machine running this.
+
 - `bar.signal` and `bar.program` must be set together, because a real-time signal terminates a process that does not handle it. The bar also needs the matching `signal=` (i3blocks) or `"signal":` (Waybar) on the block; `ccmoneta install` prints both.
 
 ## Counting more than one machine
@@ -100,6 +108,8 @@ List the other machines under `[[sync.hosts]]`. Each must be reachable with `ssh
 - **Limits** are per Claude account, so they are shown as reported and never summed across machines.
 - **Spend** runs `ccusage daily` once per machine, in parallel, and adds the results, so the per-machine figures always add up to the totals.
 - **Per-project spend** comes from ccusage's session report, which is not guaranteed to add up to the daily totals; it can come out higher.
+- **Service status** comes from `https://status.claude.com/api/v2/summary.json`: the overall indicator, the `Claude Code` component, any component that is not operational, and the unresolved incidents.
+- **The published Claude Code version** is looked up the way Claude Code's own updater does, because where it lives depends on how Claude Code was installed: a native install reads `https://downloads.claude.ai/claude-code-releases/<channel>`, an npm or bun global install runs `npm view` against a pinned registry from your home directory, and a Homebrew install reads its own cask, whose channel is fixed by the cask name rather than by settings. The channel is `autoUpdatesChannel` from Claude Code's settings, defaulting to `latest`, and only ever the literal `stable` or `latest`. Versions are compared numerically, so an install ahead of its channel reads as current rather than behind.
 - Today's figure on the bar and status line reads `$12.34` when current, `~$12.34` when over an hour old, `$…` while the first refresh for today runs, and `$?` when refreshing failed.
 
 ## Files
@@ -110,6 +120,7 @@ Under `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`:
 |---|---|
 | `cost.json` | The spend data set, with the day it covers and when it was gathered |
 | `limits.json` | The latest limit windows, and where they came from |
+| `health.json` | Claude's service status and the installed-vs-published Claude Code version |
 | `hosts/<name>/` | A mirrored machine's transcripts, with `last-sync`, `last-attempt` and `last-error` |
 | `jobs/` | Each refresh job's last attempt, failures and backoff |
 | `refresh.log` | One line per background refresh, and a note when a cache file does not read |
@@ -121,6 +132,8 @@ Under `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`:
 | `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` | Where the cache and the config live |
 | `CLAUDE_CONFIG_DIR` | Where `install statusline` and `doctor` look for Claude Code's settings |
 | `CCMONETA_CCUSAGE` | The ccusage executable to run |
+| `CCMONETA_CLAUDE` | The claude executable to read the installed version from |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Claude Code's own setting; when set, the version lookup is skipped, as the built-in updater does |
 | `CCMONETA_SSH` | The ssh executable, for sync's listing and rsync's transport |
 
 ## Tests

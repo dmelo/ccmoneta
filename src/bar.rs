@@ -15,6 +15,7 @@ use chrono::NaiveDate;
 
 use crate::config::Config;
 use crate::cost::{self, CostSnapshot, Host};
+use crate::health::{self, HealthSnapshot};
 use crate::limits::{self, Snapshot};
 use crate::refresh;
 use crate::store::{self, Job, JobState};
@@ -42,6 +43,7 @@ pub struct Inputs<'a> {
     pub limits_state: &'a JobState,
     pub cost: Option<&'a CostSnapshot>,
     pub cost_state: &'a JobState,
+    pub health: Option<&'a HealthSnapshot>,
     pub hosts: &'a [Host],
     pub now: i64,
     pub today: NaiveDate,
@@ -62,6 +64,8 @@ pub struct View {
     pub stale: bool,
     /// Nothing usable for today's spend, and the last refresh failed.
     pub cost_error: bool,
+    /// Claude is not fully operational, or Claude Code is out of date.
+    pub attention: bool,
 }
 
 /// Matches the thresholds the macOS app uses, so the two read the same.
@@ -85,7 +89,7 @@ fn short_reset(secs: i64) -> String {
     }
 }
 
-fn ago(secs: i64) -> String {
+pub fn ago(secs: i64) -> String {
     let secs = secs.max(0);
     let (d, h, m) = (secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60);
     if d > 0 {
@@ -137,6 +141,17 @@ fn cost_lines(inp: &Inputs) -> Vec<String> {
 pub fn view(inp: &Inputs) -> View {
     let cost_label = cost::today_label(inp.cost, inp.cost_state, inp.now, inp.today);
     let cost_error = cost_label == "$?";
+    // Only present when something is wrong, so a healthy service adds nothing
+    // to the block; the tooltip carries the detail either way.
+    let health_marker = health::marker(inp.health);
+    let health_suffix = health_marker
+        .as_deref()
+        .map(|m| format!(" · {m}"))
+        .unwrap_or_default();
+    let health_lines = inp
+        .health
+        .map(|h| health::lines(h, inp.now, true))
+        .unwrap_or_default();
 
     let Some(snap) = inp.limits else {
         // No limits cached yet: the first poll is running, or keeps failing.
@@ -150,8 +165,9 @@ pub fn view(inp: &Inputs) -> View {
             None => "limits: not fetched yet".to_string(),
         }];
         tooltip.extend(cost_lines(inp));
+        tooltip.extend(health_lines);
         return View {
-            full: format!("cc {marker} · {cost_label}"),
+            full: format!("cc {marker} · {cost_label}{health_suffix}"),
             short: format!("cc {marker}"),
             color: "#6272a4",
             level: "unknown",
@@ -159,6 +175,7 @@ pub fn view(inp: &Inputs) -> View {
             tooltip: tooltip.join("\n"),
             stale: false,
             cost_error,
+            attention: health_marker.is_some(),
         };
     };
 
@@ -185,6 +202,7 @@ pub fn view(inp: &Inputs) -> View {
         full.push_str(&format!("7d {:.0}%", w.percent));
     }
     full.push_str(&format!(" · {cost_label}"));
+    full.push_str(&health_suffix);
     // Limits older than the poll threshold are marked rather than hidden.
     if stale {
         full.push_str(" ⋯");
@@ -217,6 +235,7 @@ pub fn view(inp: &Inputs) -> View {
         ago(snap.age(inp.now))
     ));
     tooltip.extend(cost_lines(inp));
+    tooltip.extend(health_lines);
 
     let (level, color) = level(worst);
     View {
@@ -228,6 +247,7 @@ pub fn view(inp: &Inputs) -> View {
         tooltip: tooltip.join("\n"),
         stale,
         cost_error,
+        attention: health_marker.is_some(),
     }
 }
 
@@ -244,6 +264,9 @@ pub fn waybar(v: &View) -> String {
     }
     if v.cost_error {
         class.push("error");
+    }
+    if v.attention {
+        class.push("attention");
     }
     serde_json::json!({
         "text": v.full,
@@ -308,6 +331,8 @@ pub fn run(cfg: &Config, format: Format) -> i32 {
     let cost_snap = cost::load();
     refresh::cost_if_stale(cfg, cost_snap.as_ref());
     refresh::sync_if_due(cfg);
+    let health_snap = cfg.health.any().then(health::load).flatten();
+    refresh::health_if_due(cfg, health_snap.as_ref());
 
     let limits_state = store::job_state(Job::Limits);
     let cost_state = store::job_state(Job::Cost);
@@ -318,6 +343,7 @@ pub fn run(cfg: &Config, format: Format) -> i32 {
         limits_state: &limits_state,
         cost: cost_snap.as_ref(),
         cost_state: &cost_state,
+        health: health_snap.as_ref(),
         hosts: &hosts,
         now: store::now(),
         today: chrono::Local::now().date_naive(),
@@ -390,6 +416,17 @@ mod tests {
         cost_state: &JobState,
         hosts: &[Host],
     ) -> View {
+        render_with_health(limits, limits_state, cost, cost_state, hosts, None)
+    }
+
+    fn render_with_health(
+        limits: Option<&Snapshot>,
+        limits_state: &JobState,
+        cost: Option<&CostSnapshot>,
+        cost_state: &JobState,
+        hosts: &[Host],
+        health: Option<&HealthSnapshot>,
+    ) -> View {
         let cfg = Config::default();
         view(&Inputs {
             cfg: &cfg,
@@ -397,6 +434,7 @@ mod tests {
             limits_state,
             cost,
             cost_state,
+            health,
             hosts,
             now: NOW,
             today: today(),
@@ -439,6 +477,57 @@ mod tests {
             "{tooltip}"
         );
         assert!(tooltip.contains("laptop synced 5m ago"), "{tooltip}");
+    }
+
+    #[test]
+    fn health_adds_nothing_to_the_block_until_something_is_wrong() {
+        use crate::health::{HealthSnapshot, ServiceStatus, VersionState};
+        let ok = JobState::default();
+        let l = limits(7.0, 60.0, 30);
+        let c = cost_snap();
+        let healthy = HealthSnapshot {
+            checked_at: NOW - 60,
+            status: Some(ServiceStatus {
+                indicator: "none".into(),
+                description: "All Systems Operational".into(),
+                claude_code: Some("operational".into()),
+                degraded: vec![],
+                incidents: vec![],
+            }),
+            status_error: None,
+            version: Some(VersionState {
+                installed: "2.1.274".into(),
+                latest: Some("2.1.274".into()),
+                channel: "latest".into(),
+                source: "native".into(),
+                behind: false,
+                skipped: None,
+                background_updates: Some(false),
+            }),
+            version_error: None,
+        };
+        let v = render_with_health(Some(&l), &ok, Some(&c), &ok, &[], Some(&healthy));
+        assert_eq!(v.full, "5h 7% (3h00m) · 7d 60% · $12.34");
+        assert!(!v.attention);
+        // The detail is still in the tooltip.
+        assert!(
+            v.tooltip.contains("Claude Code 2.1.274 is current"),
+            "{}",
+            v.tooltip
+        );
+
+        let mut bad = healthy.clone();
+        bad.status.as_mut().unwrap().indicator = "major".into();
+        bad.version.as_mut().unwrap().latest = Some("2.1.280".into());
+        bad.version.as_mut().unwrap().behind = true;
+        let v = render_with_health(Some(&l), &ok, Some(&c), &ok, &[], Some(&bad));
+        assert_eq!(
+            v.full,
+            "5h 7% (3h00m) · 7d 60% · $12.34 · ⚠ claude outage · cc 2.1.280"
+        );
+        assert!(v.attention);
+        let json: serde_json::Value = serde_json::from_str(&waybar(&v)).unwrap();
+        assert_eq!(json["class"], serde_json::json!(["warn", "attention"]));
     }
 
     #[test]

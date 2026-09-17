@@ -10,6 +10,7 @@ use std::io::Read;
 
 use crate::config::Config;
 use crate::cost;
+use crate::health;
 use crate::limits::{self, Limits, Snapshot};
 use crate::refresh;
 use crate::store::{self, Job};
@@ -41,18 +42,28 @@ pub fn run(cfg: &Config) -> i32 {
     let snap = cost::load();
     refresh::cost_if_stale(cfg, snap.as_ref());
     refresh::sync_if_due(cfg);
+    let health = cfg.health.any().then(health::load).flatten();
+    refresh::health_if_due(cfg, health.as_ref());
     let label = cost::today_label(
         snap.as_ref(),
         &store::job_state(Job::Cost),
         store::now(),
         chrono::Local::now().date_naive(),
     );
-    println!("{}", render(&shown, &payload, &label));
+    println!(
+        "{}",
+        render(&shown, &payload, &label, health::marker(health.as_ref()))
+    );
     0
 }
 
 /// The line Claude Code shows. Kept terse: it sits under the prompt.
-fn render(limits: &Limits, payload: &serde_json::Value, cost_label: &str) -> String {
+fn render(
+    limits: &Limits,
+    payload: &serde_json::Value,
+    cost_label: &str,
+    health: Option<String>,
+) -> String {
     let mut parts = Vec::new();
     if let Some(model) = payload["model"]["display_name"].as_str() {
         parts.push(model.to_string());
@@ -64,5 +75,10 @@ fn render(limits: &Limits, payload: &serde_json::Value, cost_label: &str) -> Str
         parts.push(format!("7d {:.0}%", w.percent));
     }
     parts.push(cost_label.to_string());
+    // Only when something is wrong: this line sits under the prompt on every
+    // turn, so a healthy service and a current install say nothing at all.
+    if let Some(h) = health {
+        parts.push(h);
+    }
     parts.join(" · ")
 }

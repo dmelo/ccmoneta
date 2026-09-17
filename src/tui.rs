@@ -1,6 +1,7 @@
 //! The dashboard.
 //!
 //!   spend, one row per day  | limits
+//!                           | health
 //!                           | models
 //!                           | projects
 //!
@@ -27,6 +28,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use crate::config::Config;
 use crate::cost::{self, CostSnapshot, Costs, Host};
+use crate::health::{self, HealthSnapshot};
 use crate::limits::{self, Snapshot, Window};
 use crate::refresh;
 use crate::store::{self, Job, JobState};
@@ -40,6 +42,7 @@ struct App {
     limits_state: JobState,
     cost: Option<CostSnapshot>,
     cost_state: JobState,
+    health: Option<HealthSnapshot>,
     /// Hosts as they are now, for sync ages; the snapshot's copy is as of when
     /// it was gathered.
     hosts: Vec<Host>,
@@ -61,6 +64,7 @@ impl App {
             limits_state: JobState::default(),
             cost: None,
             cost_state: JobState::default(),
+            health: None,
             hosts: Vec::new(),
             refreshing: false,
             read_at: Instant::now(),
@@ -79,10 +83,12 @@ impl App {
         self.cost = cost::load();
         self.cost_state = store::job_state(Job::Cost);
         self.hosts = cost::hosts();
+        self.health = health::load();
         self.refreshing = store::is_running(Job::Cost);
         refresh::limits_if_due(&self.cfg, self.limits.as_ref());
         refresh::cost_if_stale(&self.cfg, self.cost.as_ref());
         refresh::sync_if_due(&self.cfg);
+        refresh::health_if_due(&self.cfg, self.health.as_ref());
         self.read_at = Instant::now();
     }
 
@@ -97,6 +103,9 @@ impl App {
     fn refresh(&mut self) {
         refresh::trigger(Job::Cost, true);
         refresh::trigger(Job::Limits, true);
+        if self.cfg.health.any() {
+            refresh::trigger(Job::Health, true);
+        }
         self.reload();
     }
 
@@ -384,6 +393,49 @@ fn draw_spend(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Service status and the installed Claude Code version. Each line is coloured
+/// by what it says, so a problem is visible without reading the words.
+fn health_rows(app: &App) -> Vec<Line<'_>> {
+    let Some(snap) = &app.health else {
+        return vec![Line::styled(
+            "checking…",
+            Style::default().fg(Color::DarkGray),
+        )];
+    };
+    let wrong = |l: &str| {
+        l.starts_with("incident:")
+            || l.contains("available")
+            || l.starts_with("run `")
+            || l.starts_with("background auto-updates")
+            || (l.starts_with("status: ") && !l.contains("All Systems Operational"))
+            || (l.contains(": ") && l.ends_with("_outage"))
+            || l.ends_with("degraded_performance")
+            || l.ends_with("partial_outage")
+    };
+    let unknown =
+        |l: &str| l.contains("unavailable") || l.contains("unknown") || l.contains("skipped");
+    health::lines(snap, store::now(), false)
+        .into_iter()
+        .map(|l| {
+            let style = if wrong(&l) {
+                Style::default().fg(Color::Red)
+            } else if unknown(&l) {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            Line::styled(l, style)
+        })
+        .collect()
+}
+
+fn draw_health(frame: &mut Frame, area: Rect, rows: Vec<Line>) {
+    let block = Block::bordered().title(" health ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(rows), inner);
+}
+
 fn draw_list(frame: &mut Frame, area: Rect, title: &str, app: &App, rows: Vec<Line>) {
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
@@ -480,21 +532,36 @@ fn draw(frame: &mut Frame, app: &App) {
             + 1
     });
     let models = model_rows(app);
+    let health = if app.cfg.health.any() {
+        health_rows(app)
+    } else {
+        vec![]
+    };
+    let mut constraints = vec![
+        // Each pane sized to its content. Projects takes whatever is left: it
+        // is the longest list and the least consulted.
+        Constraint::Length(limit_lines as u16 + 2),
+        Constraint::Length(models.len().max(1) as u16 + 2),
+        Constraint::Min(3),
+    ];
+    if !health.is_empty() {
+        constraints.insert(1, Constraint::Length(health.len() as u16 + 2));
+    }
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            // Each pane sized to its content, so projects — the one list on
-            // this side that can run long — gets whatever height is left.
-            Constraint::Length(limit_lines as u16 + 2),
-            Constraint::Length(models.len().max(1) as u16 + 2),
-            Constraint::Min(3),
-        ])
+        .constraints(constraints)
         .split(cols[1]);
 
     draw_spend(frame, cols[0], app);
     draw_limits(frame, right[0], app);
-    draw_list(frame, right[1], " models ", app, models);
-    draw_list(frame, right[2], " projects ", app, project_rows(app));
+    let rest = if health.is_empty() {
+        1
+    } else {
+        draw_health(frame, right[1], health);
+        2
+    };
+    draw_list(frame, right[rest], " models ", app, models);
+    draw_list(frame, right[rest + 1], " projects ", app, project_rows(app));
     let mut footer = String::from("q quit · r refresh · ↑↓ scroll");
     // How old the spend figures are. A failed refresh keeps the old figures up,
     // so this age, and the failure note, are what tell a current dashboard from

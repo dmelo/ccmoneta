@@ -9,6 +9,7 @@ mod bar;
 mod config;
 mod cost;
 mod doctor;
+mod health;
 mod hook;
 mod install;
 mod limits;
@@ -26,7 +27,8 @@ usage: ccmoneta [command]
   hook                     Claude Code statusLine hook; reads its JSON on stdin
   sync [host...]           mirror other machines' transcripts now; hosts come
                            from the config file, or are named here
-  refresh <job> [--force]  refresh the cache now; <job> is cost, limits or sync
+  refresh <job> [--force]  refresh the cache now; <job> is cost, limits, sync
+                           or health
   install statusline [--force]
                            add the hook to Claude Code's settings
   install i3blocks|waybar  print a block to add to that bar's config

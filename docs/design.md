@@ -38,6 +38,7 @@ Nothing needs to be installed beyond the binary: the act of looking at any surfa
 | `cost` | runs ccusage (see Cost) | `cost.json`: the full dashboard data set, not only today's total |
 | `limits` | polls `GET /api/oauth/usage` | `limits.json` |
 | `sync` | mirrors configured remote machines' transcripts | `hosts/<name>/projects/`, `hosts/<name>/last-sync` |
+| `health` | reads the status page, and the published version for this install's channel | `health.json` |
 
 ### Single flight
 
@@ -57,6 +58,7 @@ Pure functions, unit-tested, with thresholds from the config file:
 
 - **cost** is stale when there is no `cost.json`; when it was generated more than `cost.refresh_seconds` ago (default 180); when it was generated on an earlier local calendar day, since its "today" is then a finished day; when any mirrored host has synced since it was generated; or when the set of hosts it covered differs from the hosts now configured.
 - **limits** needs a poll when the cached snapshot is older than `limits.max_age_seconds` (default 900) and the job's backoff allows it. The status line hook never polls: Claude Code hands it fresh limits on every turn, and it saves them.
+- **health** is due when the cached check is older than `health.max_age_seconds` (default 900, floor 300). Both halves are other people's services, so this is the slowest schedule, its backoff holds even on a manual refresh, and one half failing still writes the other.
 - **sync** is due for a host when its last *attempt*, successful or not, is older than `sync.refresh_seconds` (default 600). Counting attempts rather than successes stops a sleeping laptop from being retried on every render.
 
 ### Backoff
@@ -97,6 +99,30 @@ Unchanged in substance from today:
 - Both normalise to one `Window { percent, resets_at }`.
 - Limits are per account, so they are never summed across machines.
 
+## Health
+
+Two questions, one job, one cache file.
+
+**Service status** is Statuspage's summary (`/api/v2/summary.json`): the overall indicator, the `Claude Code` component — matched on its component id, since ids survive renames — every component that is not operational, and the unresolved incidents. The indicator alone is not enough: Statuspage leaves it at `none` for some partial degradations, so a component that is not `operational` also counts as degraded.
+
+**The installed version** is the first token of `claude --version`. Where the *published* version lives depends on the install, so the lookup mirrors the product's own updater rather than guessing:
+
+| Install | Lookup | Channel from |
+|---|---|---|
+| native, or unrecognised | `GET https://downloads.claude.ai/claude-code-releases/<channel>`, plain text | `autoUpdatesChannel` in settings, default `latest` |
+| npm or bun global | `npm view @anthropic-ai/claude-code@<channel> version`, registry pinned, run from `$HOME` | the same setting |
+| Homebrew | `https://formulae.brew.sh/api/cask/<cask>.json` | the cask name: `claude-code` is stable, `claude-code@latest` is latest |
+
+Three rules keep this honest:
+
+- A channel or cask name reaches a URL and a command line, so a value that is not exactly one of the two known names is never passed on; it falls back to the default. The registry pin and the `$HOME` working directory keep a project's own `.npmrc` out of the resolution.
+- A Homebrew install's channel comes from its cask, not from settings, or a stable-cask user would permanently read as behind against the faster channel.
+- Versions are compared numerically, part by part, ignoring a leading `v` and any `+build` suffix — `2.1.9` is older than `2.1.10`, which string comparison gets wrong. An install *ahead* of its channel reads as current, and an unparseable version reads as neither.
+
+A failed lookup is not a claim: `behind` stays false, and the reason is shown as unknown rather than as out of date. When `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set, the version lookup is skipped entirely, because Claude Code's own updater suppresses the same fetch in that mode.
+
+Surfaces stay quiet while everything is fine: the bar block and the status line append `⚠ claude <state>` or `⚠ cc <version>` only when there is something to say, and carry the detail in the tooltip. The dashboard has a health pane, and `doctor` a health section, which both always show the current answer. `autoUpdates: false` in `~/.claude.json` is reported alongside an out-of-date install, because it is why the install went stale.
+
 ## Multi-machine sync
 
 `ccmoneta sync [host...]` replaces the bash script. Hosts come from the config file; nothing is named in code.
@@ -120,6 +146,11 @@ window_days = 30
 
 [limits]
 max_age_seconds = 900
+
+[health]
+max_age_seconds = 900              # floor 300: both lookups hit someone else's service
+status = true                      # https://status.claude.com
+version = true                     # installed Claude Code vs its release channel
 
 [sync]
 refresh_seconds = 600

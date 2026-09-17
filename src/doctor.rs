@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::config::{self, Config};
 use crate::store::{self, Job};
-use crate::{cost, install, limits, sync};
+use crate::{cost, health, install, limits, sync};
 
 struct Report {
     failed: bool,
@@ -183,6 +183,32 @@ pub fn run(cfg: &Config, cfg_error: Option<&str>) -> i32 {
         Err(e) => r.warn(&format!("curl: {e}; the usage endpoint cannot be polled")),
     }
     job_line(&r, Job::Limits, now);
+
+    if cfg.health.any() {
+        println!("health");
+        match health::load() {
+            Some(snap) => {
+                for line in health::lines(&snap, now, true) {
+                    // A problem with Claude, or an out-of-date install, is a
+                    // warning: neither stops ccmoneta's numbers being right.
+                    if snap.needs_attention()
+                        && (line.contains("available")
+                            || line.starts_with("run `")
+                            || line.starts_with("background auto-updates")
+                            || line.starts_with("incident:")
+                            || (line.starts_with("status: ")
+                                && !line.contains("All Systems Operational")))
+                    {
+                        r.warn(&line);
+                    } else {
+                        r.ok(&line);
+                    }
+                }
+            }
+            None => r.warn("no health check yet; any surface starts the first one"),
+        }
+        job_line(&r, Job::Health, now);
+    }
 
     println!("status line");
     let settings = install::settings_path();

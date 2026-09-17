@@ -16,6 +16,7 @@ pub struct Config {
     pub limits: LimitsConfig,
     pub sync: SyncConfig,
     pub bar: BarConfig,
+    pub health: HealthConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -85,6 +86,35 @@ pub struct HostConfig {
     pub remote_dir: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct HealthConfig {
+    /// Re-check the status page and the published version once the cached
+    /// answers are older than this.
+    pub max_age_seconds: i64,
+    /// Check https://status.claude.com.
+    pub status: bool,
+    /// Compare the installed Claude Code against its release channel.
+    pub version: bool,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            max_age_seconds: 900,
+            status: true,
+            version: true,
+        }
+    }
+}
+
+impl HealthConfig {
+    /// Nothing to check means no job and no pane.
+    pub fn any(&self) -> bool {
+        self.status || self.version
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct BarConfig {
@@ -133,6 +163,10 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     if cfg.sync.refresh_seconds < 60 {
         return Err("sync.refresh_seconds must be at least 60".into());
+    }
+    // Both are other people's services, polled by every machine running this.
+    if cfg.health.max_age_seconds < 300 {
+        return Err("health.max_age_seconds must be at least 300".into());
     }
     let mut seen = BTreeSet::new();
     for h in &cfg.sync.hosts {
@@ -241,6 +275,17 @@ mod tests {
     fn unknown_keys_are_an_error() {
         assert!(parse("[cost]\nrefresh_secs = 60\n").is_err());
         assert!(parse("[colour]\n").is_err());
+    }
+
+    #[test]
+    fn health_defaults_to_both_checks_and_rejects_impolite_polling() {
+        let cfg = Config::default();
+        assert_eq!(cfg.health.max_age_seconds, 900);
+        assert!(cfg.health.status && cfg.health.version && cfg.health.any());
+        let off = parse("[health]\nstatus = false\nversion = false\n").unwrap();
+        assert!(!off.health.any());
+        assert!(parse("[health]\nmax_age_seconds = 60\n").is_err());
+        assert!(parse("[health]\nversions = true\n").is_err());
     }
 
     #[test]

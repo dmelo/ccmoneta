@@ -13,6 +13,7 @@ use chrono::NaiveDate;
 
 use crate::config::Config;
 use crate::cost::{self, CostSnapshot};
+use crate::health::{self, HealthSnapshot};
 use crate::limits::{self, Snapshot};
 use crate::store::{self, Job, JobState};
 use crate::sync;
@@ -62,6 +63,12 @@ pub fn cost_is_stale(
 }
 
 pub fn limits_poll_due(snap: Option<&Snapshot>, now: i64, max_age: i64) -> bool {
+    snap.is_none_or(|s| s.age(now) >= max_age)
+}
+
+/// The status page and the version lookup are other people's services, so this
+/// is deliberately the slowest of the schedules.
+pub fn health_is_due(snap: Option<&HealthSnapshot>, now: i64, max_age: i64) -> bool {
     snap.is_none_or(|s| s.age(now) >= max_age)
 }
 
@@ -125,6 +132,12 @@ pub fn cost_if_stale(cfg: &Config, snap: Option<&CostSnapshot>) {
 pub fn limits_if_due(cfg: &Config, snap: Option<&Snapshot>) {
     if limits_poll_due(snap, store::now(), cfg.limits.max_age_seconds) {
         trigger(Job::Limits, false);
+    }
+}
+
+pub fn health_if_due(cfg: &Config, snap: Option<&HealthSnapshot>) {
+    if cfg.health.any() && health_is_due(snap, store::now(), cfg.health.max_age_seconds) {
+        trigger(Job::Health, false);
     }
 }
 
@@ -219,6 +232,10 @@ pub fn run(cfg: &Config, job: Job, force: bool) -> i32 {
                 limits_poll_due(limits::load().as_ref(), now, cfg.limits.max_age_seconds)
             }
             Job::Sync => !sync::due_hosts(cfg, now).is_empty(),
+            Job::Health => {
+                cfg.health.any()
+                    && health_is_due(health::load().as_ref(), now, cfg.health.max_age_seconds)
+            }
         };
     let held_back = match job {
         // The usage endpoint is rate-limited, so its backoff holds even on a
@@ -230,6 +247,8 @@ pub fn run(cfg: &Config, job: Job, force: bool) -> i32 {
         // Each host spaces its own attempts (see sync::is_due), so one
         // unreachable host does not hold back the others.
         Job::Sync => false,
+        // Someone else's services: a manual refresh does not skip the backoff.
+        Job::Health => !state.allows(now),
     };
     if !needed || held_back {
         return 0;
@@ -242,6 +261,7 @@ pub fn run(cfg: &Config, job: Job, force: bool) -> i32 {
         Job::Cost => cost::refresh(cfg),
         Job::Limits => limits::refresh(),
         Job::Sync => sync::run_due(cfg, force),
+        Job::Health => health::refresh(cfg.health.status, cfg.health.version),
     };
     record_outcome(&mut state, &outcome, store::now());
     store::save_job_state(job, &state);
@@ -381,6 +401,17 @@ mod tests {
         assert!(limits_poll_due(None, NOW, 900));
         assert!(!limits_poll_due(Some(&snap(899)), NOW, 900));
         assert!(limits_poll_due(Some(&snap(900)), NOW, 900));
+    }
+
+    #[test]
+    fn health_is_checked_only_when_missing_or_old() {
+        let snap = |age: i64| HealthSnapshot {
+            checked_at: NOW - age,
+            ..Default::default()
+        };
+        assert!(health_is_due(None, NOW, 900));
+        assert!(!health_is_due(Some(&snap(899)), NOW, 900));
+        assert!(health_is_due(Some(&snap(900)), NOW, 900));
     }
 
     #[test]

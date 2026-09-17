@@ -4,6 +4,7 @@
 //!
 //!   limits.json          the latest limit windows, from the hook or the endpoint
 //!   cost.json            the full cost data set, with when and for which day
+//!   health.json          Claude's service status and the installed Claude Code version
 //!   hosts/<name>/        another machine's mirrored transcripts, with its
 //!                        last-sync, last-attempt and last-error
 //!   jobs/<job>.json      a job's attempts, failures and backoff; written by that job
@@ -82,6 +83,7 @@ pub enum Job {
     Cost,
     Limits,
     Sync,
+    Health,
 }
 
 impl Job {
@@ -90,6 +92,7 @@ impl Job {
             Job::Cost => "cost",
             Job::Limits => "limits",
             Job::Sync => "sync",
+            Job::Health => "health",
         }
     }
 
@@ -98,6 +101,7 @@ impl Job {
             "cost" => Some(Job::Cost),
             "limits" => Some(Job::Limits),
             "sync" => Some(Job::Sync),
+            "health" => Some(Job::Health),
             _ => None,
         }
     }
