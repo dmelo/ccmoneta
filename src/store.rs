@@ -21,6 +21,21 @@ pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+/// A duration in words, for "synced 3h 04m ago" and "resets in 2d 1h". Lives
+/// here with `now()` because the bar, the dashboard, doctor and the health
+/// check all render it and each used to carry its own copy.
+pub fn ago(secs: i64) -> String {
+    let secs = secs.max(0);
+    let (d, h, m) = (secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m:02}m")
+    } else {
+        format!("{m}m")
+    }
+}
+
 pub fn home() -> PathBuf {
     std::env::var_os("HOME")
         .filter(|v| !v.is_empty())

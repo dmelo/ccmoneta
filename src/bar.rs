@@ -18,7 +18,7 @@ use crate::cost::{self, CostSnapshot, Host};
 use crate::health::{self, HealthSnapshot};
 use crate::limits::{self, Snapshot};
 use crate::refresh;
-use crate::store::{self, Job, JobState};
+use crate::store::{self, Job, JobState, ago};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -89,18 +89,6 @@ fn short_reset(secs: i64) -> String {
     }
 }
 
-pub fn ago(secs: i64) -> String {
-    let secs = secs.max(0);
-    let (d, h, m) = (secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60);
-    if d > 0 {
-        format!("{d}d {h}h")
-    } else if h > 0 {
-        format!("{h}h {m:02}m")
-    } else {
-        format!("{m}m")
-    }
-}
-
 fn cost_lines(inp: &Inputs) -> Vec<String> {
     let mut out = Vec::new();
     let today = inp.today.format("%Y-%m-%d").to_string();
@@ -148,9 +136,17 @@ pub fn view(inp: &Inputs) -> View {
         .as_deref()
         .map(|m| format!(" · {m}"))
         .unwrap_or_default();
-    let health_lines = inp
+    // The tooltip shows the text; severity is what the dashboard and doctor
+    // use, and the bar says the same thing through its marker and class.
+    let health_lines: Vec<String> = inp
         .health
-        .map(|h| health::lines(h, inp.now, true))
+        .map(|h| {
+            health::lines(h)
+                .into_iter()
+                .chain(health::age_line(h, inp.now))
+                .map(|l| l.text)
+                .collect()
+        })
         .unwrap_or_default();
 
     let Some(snap) = inp.limits else {
@@ -500,7 +496,6 @@ mod tests {
                 latest: Some("2.1.274".into()),
                 channel: "latest".into(),
                 source: "native".into(),
-                behind: false,
                 skipped: None,
                 background_updates: Some(false),
             }),
@@ -518,8 +513,9 @@ mod tests {
 
         let mut bad = healthy.clone();
         bad.status.as_mut().unwrap().indicator = "major".into();
+        // behind is derived from the two versions, so publishing a newer one
+        // is the whole change.
         bad.version.as_mut().unwrap().latest = Some("2.1.280".into());
-        bad.version.as_mut().unwrap().behind = true;
         let v = render_with_health(Some(&l), &ok, Some(&c), &ok, &[], Some(&bad));
         assert_eq!(
             v.full,

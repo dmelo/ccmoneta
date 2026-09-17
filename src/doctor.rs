@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 
 use crate::config::{self, Config};
-use crate::store::{self, Job};
+use crate::store::{self, Job, ago};
 use crate::{cost, health, install, limits, sync};
 
 struct Report {
@@ -31,18 +31,6 @@ impl Report {
     fn fail(&mut self, what: &str) {
         println!("  FAIL  {what}");
         self.failed = true;
-    }
-}
-
-fn ago(secs: i64) -> String {
-    let secs = secs.max(0);
-    let (d, h, m) = (secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60);
-    if d > 0 {
-        format!("{d}d {h}h")
-    } else if h > 0 {
-        format!("{h}h {m:02}m")
-    } else {
-        format!("{m}m")
     }
 }
 
@@ -188,20 +176,16 @@ pub fn run(cfg: &Config, cfg_error: Option<&str>) -> i32 {
         println!("health");
         match health::load() {
             Some(snap) => {
-                for line in health::lines(&snap, now, true) {
-                    // A problem with Claude, or an out-of-date install, is a
-                    // warning: neither stops ccmoneta's numbers being right.
-                    if snap.needs_attention()
-                        && (line.contains("available")
-                            || line.starts_with("run `")
-                            || line.starts_with("background auto-updates")
-                            || line.starts_with("incident:")
-                            || (line.starts_with("status: ")
-                                && !line.contains("All Systems Operational")))
-                    {
-                        r.warn(&line);
-                    } else {
-                        r.ok(&line);
+                // A problem with Claude, or an out-of-date install, is a
+                // warning: neither stops ccmoneta's numbers being right. The
+                // line says which it is, so nothing here reads the wording.
+                for line in health::lines(&snap)
+                    .into_iter()
+                    .chain(health::age_line(&snap, now))
+                {
+                    match line.severity {
+                        health::Severity::Warn => r.warn(&line.text),
+                        health::Severity::Ok | health::Severity::Unknown => r.ok(&line.text),
                     }
                 }
             }

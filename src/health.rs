@@ -20,6 +20,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::config::HealthConfig;
 use crate::store;
 
 /// Statuspage's component id for Claude Code. Ids are stable across renames,
@@ -39,6 +40,46 @@ const DEFAULT_CHANNEL: &str = "latest";
 /// The Homebrew casks, and the channel each one tracks. A brew install takes
 /// its channel from the cask it was installed from, not from settings.
 const CASKS: [(&str, &str); 2] = [("claude-code", "stable"), ("claude-code@latest", "latest")];
+
+/// How a rendered line should read. Decided where the line is built, because
+/// that is where the meaning is known: a consumer that re-derived it from the
+/// wording would silently mislabel every line the wording later changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Nothing to do.
+    Ok,
+    /// Claude is not fully operational, or this install is out of date.
+    Warn,
+    /// Something could not be checked. Not a claim about Claude.
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HealthLine {
+    pub severity: Severity,
+    pub text: String,
+}
+
+impl HealthLine {
+    fn ok(text: String) -> Self {
+        Self {
+            severity: Severity::Ok,
+            text,
+        }
+    }
+    fn warn(text: String) -> Self {
+        Self {
+            severity: Severity::Warn,
+            text,
+        }
+    }
+    fn unknown(text: String) -> Self {
+        Self {
+            severity: Severity::Unknown,
+            text,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Incident {
@@ -80,19 +121,28 @@ impl ServiceStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VersionState {
     pub installed: String,
-    /// None when the lookup was skipped or failed; `behind` is then false,
-    /// because nothing is known to be newer.
+    /// None when the lookup was skipped or failed, in which case nothing is
+    /// known to be newer and `behind()` is false.
     pub latest: Option<String>,
     pub channel: String,
     /// native, npm, brew — how the newest version was looked up.
     pub source: String,
-    pub behind: bool,
-    /// Set when no lookup was made, with the reason.
+    /// Why there is no `latest`: the lookup was skipped, or it failed.
     pub skipped: Option<String>,
     /// `autoUpdates` from ~/.claude.json. `Some(false)` is why an install goes
     /// stale, and is usually the user's own choice rather than a lock.
     #[serde(default)]
     pub background_updates: Option<bool>,
+}
+
+impl VersionState {
+    /// Derived rather than stored: a stored copy could disagree with the two
+    /// versions it is about.
+    pub fn behind(&self) -> bool {
+        self.latest
+            .as_deref()
+            .is_some_and(|l| is_behind(&self.installed, l))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -111,10 +161,11 @@ impl HealthSnapshot {
 
     /// Whether anything here is worth putting in front of the user: a service
     /// problem, or an out-of-date install. Lookup failures are not — they say
-    /// something about this machine's network, not about Claude.
+    /// something about this machine's network, not about Claude — so they are
+    /// Unknown rather than Warn. Reading the rendered severities keeps the
+    /// marker on the bar and the colours in the dashboard from disagreeing.
     pub fn needs_attention(&self) -> bool {
-        self.status.as_ref().is_some_and(|s| !s.is_ok())
-            || self.version.as_ref().is_some_and(|v| v.behind)
+        lines(self).iter().any(|l| l.severity == Severity::Warn)
     }
 }
 
@@ -401,6 +452,13 @@ fn fetch_latest(plan: &LookupPlan) -> Result<String, String> {
                     "version",
                     "--registry",
                     NPM_REGISTRY,
+                    // Every curl here has a time budget; without these npm has
+                    // none, and a stalled registry would hold the job's lock
+                    // until the process is killed.
+                    "--fetch-timeout",
+                    "10000",
+                    "--fetch-retries",
+                    "0",
                 ])
                 .current_dir(store::home())
                 .stdin(Stdio::null())
@@ -459,7 +517,6 @@ fn check_version() -> Result<VersionState, String> {
             latest: None,
             channel: plan.channel().to_string(),
             source: plan.source().to_string(),
-            behind: false,
             skipped: Some("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set".into()),
             background_updates,
         });
@@ -471,13 +528,11 @@ fn check_version() -> Result<VersionState, String> {
         Ok(v) => (Some(v), None),
         Err(e) => (None, Some(e)),
     };
-    let behind = latest.as_deref().is_some_and(|l| is_behind(&installed, l));
     Ok(VersionState {
         installed,
         latest,
         channel: plan.channel().to_string(),
         source: plan.source().to_string(),
-        behind,
         skipped,
         background_updates,
     })
@@ -516,23 +571,34 @@ fn curl_json(url: &str) -> Result<serde_json::Value, String> {
 
 /// The health job: both checks, cached together. One failing does not lose the
 /// other, and a snapshot is written either way so the schedule keeps its pace.
-pub fn refresh(check_status: bool, check_version_too: bool) -> Result<(), String> {
-    let (status, status_error) = if check_status {
-        match fetch_status() {
-            Ok(s) => (Some(s), None),
-            Err(e) => (None, Some(e)),
+pub fn refresh(cfg: &HealthConfig) -> Result<(), String> {
+    // The two checks share nothing and each allows curl up to 10 seconds, so
+    // running them in sequence would hold this job's lock for twice as long as
+    // the work needs. cost::gather parallelises the same shape.
+    let (status_run, version_run) = std::thread::scope(|scope| {
+        let status = scope.spawn(|| cfg.status.then(fetch_status));
+        let version = scope.spawn(|| cfg.version.then(check_version));
+        (
+            status
+                .join()
+                .unwrap_or_else(|_| Some(Err("status check panicked".into()))),
+            version
+                .join()
+                .unwrap_or_else(|_| Some(Err("version check panicked".into()))),
+        )
+    });
+
+    /// A check that did not run leaves both halves empty; one that ran leaves
+    /// exactly one.
+    fn split<T>(run: Option<Result<T, String>>) -> (Option<T>, Option<String>) {
+        match run {
+            Some(Ok(v)) => (Some(v), None),
+            Some(Err(e)) => (None, Some(e)),
+            None => (None, None),
         }
-    } else {
-        (None, None)
-    };
-    let (version, version_error) = if check_version_too {
-        match check_version() {
-            Ok(v) => (Some(v), None),
-            Err(e) => (None, Some(e)),
-        }
-    } else {
-        (None, None)
-    };
+    }
+    let (status, status_error) = split(status_run);
+    let (version, version_error) = split(version_run);
 
     let snap = HealthSnapshot {
         checked_at: store::now(),
@@ -553,65 +619,98 @@ pub fn refresh(check_status: bool, check_version_too: bool) -> Result<(), String
     }
 }
 
-/// The lines a tooltip or the dashboard shows, most important first.
-pub fn lines(snap: &HealthSnapshot, now: i64, include_age: bool) -> Vec<String> {
+/// The lines a tooltip, the dashboard or doctor shows, most important first.
+/// Each carries its own severity, so no consumer has to read the wording.
+pub fn lines(snap: &HealthSnapshot) -> Vec<HealthLine> {
     let mut out = Vec::new();
     match (&snap.status, &snap.status_error) {
         (Some(s), _) => {
-            out.push(format!("status: {}", s.description));
+            let headline = format!("status: {}", s.description);
+            out.push(if s.is_ok() {
+                HealthLine::ok(headline)
+            } else {
+                HealthLine::warn(headline)
+            });
             if let Some(cc) = &s.claude_code
                 && cc != "operational"
             {
-                out.push(format!("Claude Code: {cc}"));
+                out.push(HealthLine::warn(format!("Claude Code: {cc}")));
             }
+            // Every non-operational component, whatever it is called: a status
+            // this code has never heard of still reads as a problem.
             for (name, state) in &s.degraded {
-                out.push(format!("{name}: {state}"));
+                out.push(HealthLine::warn(format!("{name}: {state}")));
             }
             for i in &s.incidents {
-                out.push(format!("incident: {} ({}, {})", i.name, i.impact, i.status));
+                out.push(HealthLine::warn(format!(
+                    "incident: {} ({}, {})",
+                    i.name, i.impact, i.status
+                )));
             }
         }
-        (None, Some(e)) => out.push(format!("status unavailable: {e}")),
+        // Not a claim about Claude: this machine could not ask.
+        (None, Some(e)) => out.push(HealthLine::unknown(format!("status unavailable: {e}"))),
         (None, None) => {}
     }
     match (&snap.version, &snap.version_error) {
         (Some(v), _) => {
-            let mut line = match &v.latest {
-                Some(latest) if v.behind => {
+            let behind = v.behind();
+            let mut text = match &v.latest {
+                Some(latest) if behind => {
                     format!("Claude Code {} → {latest} available", v.installed)
                 }
                 Some(_) => format!("Claude Code {} is current", v.installed),
                 None => format!("Claude Code {}", v.installed),
             };
-            line.push_str(&format!(" ({} channel)", v.channel));
-            out.push(line);
-            if v.behind {
-                if v.background_updates == Some(false) {
-                    out.push("background auto-updates are off; run `claude update`".into());
-                } else {
-                    out.push("run `claude update`".into());
-                }
+            text.push_str(&format!(" ({} channel)", v.channel));
+            out.push(match (behind, v.latest.is_some()) {
+                (true, _) => HealthLine::warn(text),
+                // Nothing to compare against, so nothing is claimed.
+                (false, false) => HealthLine::unknown(text),
+                (false, true) => HealthLine::ok(text),
+            });
+            if behind {
+                out.push(HealthLine::warn(
+                    if v.background_updates == Some(false) {
+                        "background auto-updates are off; run `claude update`"
+                    } else {
+                        "run `claude update`"
+                    }
+                    .to_string(),
+                ));
             }
             if let Some(why) = &v.skipped {
-                out.push(format!("version lookup skipped: {why}"));
+                out.push(HealthLine::unknown(format!(
+                    "version lookup skipped: {why}"
+                )));
             }
         }
-        (None, Some(e)) => out.push(format!("version unknown: {e}")),
+        (None, Some(e)) => out.push(HealthLine::unknown(format!("version unknown: {e}"))),
         (None, None) => {}
     }
-    if include_age && snap.checked_at > 0 {
-        out.push(format!(
-            "health checked {} ago",
-            crate::bar::ago(snap.age(now))
-        ));
-    }
     out
+}
+
+/// How old the check is. Its own function because only the surfaces with room
+/// for it ask, and it is the one line that needs a clock.
+pub fn age_line(snap: &HealthSnapshot, now: i64) -> Option<HealthLine> {
+    (snap.checked_at > 0).then(|| {
+        HealthLine::ok(format!(
+            "health checked {} ago",
+            crate::store::ago(snap.age(now))
+        ))
+    })
 }
 
 /// The marker a bar or the status line appends, and nothing at all when there
 /// is nothing to say. Surfaces stay quiet while everything is fine.
 pub fn marker(snap: Option<&HealthSnapshot>) -> Option<String> {
     let snap = snap?;
+    // One answer to "is anything wrong": the bar's marker and the dashboard's
+    // colours cannot disagree, because both come from the line severities.
+    if !snap.needs_attention() {
+        return None;
+    }
     let mut parts = Vec::new();
     if let Some(s) = &snap.status
         && !s.is_ok()
@@ -619,7 +718,7 @@ pub fn marker(snap: Option<&HealthSnapshot>) -> Option<String> {
         parts.push(format!("claude {}", s.short()));
     }
     if let Some(v) = &snap.version
-        && v.behind
+        && v.behind()
         && let Some(latest) = &v.latest
     {
         parts.push(format!("cc {latest}"));
@@ -691,14 +790,16 @@ mod tests {
         assert_eq!(s.short(), "outage");
         assert_eq!(s.incidents.len(), 1);
         assert_eq!(s.incidents[0].name, "Elevated errors");
-        let out = lines(&snapshot(Some(s), None), 1_800_000_000, false);
+        let out = lines(&snapshot(Some(s), None));
+        // Every line here is a problem, and each says so itself.
+        assert!(out.iter().all(|l| l.severity == Severity::Warn), "{out:?}");
         assert!(
-            out.iter().any(|l| l == "Claude Code: major_outage"),
+            out.iter().any(|l| l.text == "Claude Code: major_outage"),
             "{out:?}"
         );
         assert!(
             out.iter()
-                .any(|l| l == "incident: Elevated errors (major, investigating)"),
+                .any(|l| l.text == "incident: Elevated errors (major, investigating)"),
             "{out:?}"
         );
     }
@@ -846,23 +947,23 @@ mod tests {
             latest: Some("2.1.274".into()),
             channel: "latest".into(),
             source: "native".into(),
-            behind: true,
             skipped: None,
             background_updates: Some(false),
         };
         let snap = snapshot(None, Some(v));
         assert!(snap.needs_attention());
         assert_eq!(marker(Some(&snap)).unwrap(), "⚠ cc 2.1.274");
-        let out = lines(&snap, 1_800_000_000, false);
+        let out = lines(&snap);
         assert!(
-            out.iter()
-                .any(|l| l == "Claude Code 2.1.267 → 2.1.274 available (latest channel)"),
+            out.iter().any(|l| l.text
+                == "Claude Code 2.1.267 → 2.1.274 available (latest channel)"
+                && l.severity == Severity::Warn),
             "{out:?}"
         );
         // autoUpdates is off in this snapshot, which is why it went stale.
         assert!(
             out.iter()
-                .any(|l| l == "background auto-updates are off; run `claude update`"),
+                .any(|l| l.text == "background auto-updates are off; run `claude update`"),
             "{out:?}"
         );
     }
@@ -874,21 +975,61 @@ mod tests {
             latest: None,
             channel: "latest".into(),
             source: "native".into(),
-            behind: false,
             skipped: Some("curl exited 6".into()),
             background_updates: None,
         };
         let snap = snapshot(None, Some(v));
         assert!(!snap.needs_attention());
         assert_eq!(marker(Some(&snap)), None);
-        let out = lines(&snap, 1_800_000_000, true);
+        let out: Vec<HealthLine> = lines(&snap)
+            .into_iter()
+            .chain(age_line(&snap, 1_800_000_000))
+            .collect();
+        // A lookup that failed reads as unknown, never as out of date.
         assert!(
-            out.iter().any(|l| l.contains("version lookup skipped")),
+            out.iter()
+                .any(|l| l.text.contains("version lookup skipped")
+                    && l.severity == Severity::Unknown),
             "{out:?}"
         );
+        assert!(!out.iter().any(|l| l.severity == Severity::Warn), "{out:?}");
         assert!(
-            out.iter().any(|l| l.starts_with("health checked")),
+            out.iter().any(|l| l.text.starts_with("health checked")),
             "{out:?}"
         );
+    }
+
+    /// Each of these was mislabelled while severity was re-derived from the
+    /// wording: a failed fetch read as an available update because
+    /// "unavailable" contains "available", a component outage printed as ok in
+    /// doctor, and a status no predicate enumerated rendered as healthy.
+    #[test]
+    fn a_line_carries_its_own_severity_rather_than_being_read_back_from_its_words() {
+        let unreachable = HealthSnapshot {
+            checked_at: 1_800_000_000,
+            status: None,
+            status_error: Some("curl exited 6".into()),
+            version: None,
+            version_error: None,
+        };
+        let out = lines(&unreachable);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].text.starts_with("status unavailable"), "{out:?}");
+        assert_eq!(out[0].severity, Severity::Unknown);
+        // Not a claim about Claude, so no marker and no attention.
+        assert!(!unreachable.needs_attention());
+        assert_eq!(marker(Some(&unreachable)), None);
+
+        // A component status nothing enumerates is still not operational.
+        let maintenance = parse_summary(&summary("none", "under_maintenance", "")).unwrap();
+        let snap = snapshot(Some(maintenance), None);
+        let out = lines(&snap);
+        assert!(
+            out.iter()
+                .any(|l| l.text == "Claude Code: under_maintenance"
+                    && l.severity == Severity::Warn),
+            "{out:?}"
+        );
+        assert!(snap.needs_attention());
     }
 }

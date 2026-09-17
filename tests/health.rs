@@ -46,7 +46,7 @@ impl Sandbox {
     }
 
     /// A snapshot as the health job would have written it, checked just now.
-    fn write_health(&self, status_indicator: &str, installed: &str, latest: &str, behind: bool) {
+    fn write_health(&self, status_indicator: &str, installed: &str, latest: &str) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -58,7 +58,7 @@ impl Sandbox {
                 "indicator": "{status_indicator}",
                 "description": "Partial outage",
                 "claude_code": "major_outage",
-                "degraded": [["Claude Code", "major_outage"]],
+                "degraded": [["Claude Code", "major_outage"], ["claude.ai", "degraded_performance"]],
                 "incidents": [{{"name": "Elevated errors", "impact": "major", "status": "investigating"}}]
               }},
               "status_error": null,
@@ -67,7 +67,6 @@ impl Sandbox {
                 "latest": "{latest}",
                 "channel": "latest",
                 "source": "native",
-                "behind": {behind},
                 "skipped": null,
                 "background_updates": false
               }},
@@ -141,7 +140,7 @@ impl Drop for Sandbox {
 #[test]
 fn an_outage_and_an_old_install_reach_every_surface() {
     let sb = Sandbox::new("bad");
-    sb.write_health("major", "2.1.267", "2.1.280", true);
+    sb.write_health("major", "2.1.267", "2.1.280");
 
     let bar = sb.bar("i3blocks");
     let full = bar.lines().next().unwrap();
@@ -176,6 +175,18 @@ fn an_outage_and_an_old_install_reach_every_surface() {
 
     let doctor = sb.doctor();
     assert!(doctor.contains("warn  status: Partial outage"), "{doctor}");
+    // A non-operational component is a warning here too: doctor used to print
+    // this line as ok, because it re-derived severity from the wording and its
+    // predicate list lacked the component statuses.
+    assert!(
+        doctor.contains("warn  Claude Code: major_outage"),
+        "{doctor}"
+    );
+    // Any non-operational component, not just the Claude Code one.
+    assert!(
+        doctor.contains("warn  claude.ai: degraded_performance"),
+        "{doctor}"
+    );
     assert!(
         doctor.contains("warn  Claude Code 2.1.267 → 2.1.280 available"),
         "{doctor}"
@@ -201,7 +212,7 @@ fn a_healthy_check_stays_out_of_the_way() {
                             "claude_code": "operational", "degraded": [], "incidents": []}},
                 "status_error": null,
                 "version": {{"installed": "2.1.274", "latest": "2.1.274", "channel": "latest",
-                             "source": "native", "behind": false, "skipped": null,
+                             "source": "native", "skipped": null,
                              "background_updates": true}},
                 "version_error": null}}"#
         ),
@@ -255,7 +266,7 @@ fn health_can_be_turned_off_entirely() {
         "[health]\nstatus = false\nversion = false\n",
     )
     .unwrap();
-    sb.write_health("major", "2.1.267", "2.1.280", true);
+    sb.write_health("major", "2.1.267", "2.1.280");
 
     // The cache file is there and says something is wrong, but with both checks
     // off there is no health section and no marker on any surface.

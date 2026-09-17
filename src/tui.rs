@@ -31,7 +31,7 @@ use crate::cost::{self, CostSnapshot, Costs, Host};
 use crate::health::{self, HealthSnapshot};
 use crate::limits::{self, Snapshot, Window};
 use crate::refresh;
-use crate::store::{self, Job, JobState};
+use crate::store::{self, Job, JobState, ago};
 
 /// How often the cache files are re-read. They are small and local.
 const REREAD: Duration = Duration::from_secs(2);
@@ -83,7 +83,7 @@ impl App {
         self.cost = cost::load();
         self.cost_state = store::job_state(Job::Cost);
         self.hosts = cost::hosts();
-        self.health = health::load();
+        self.health = self.cfg.health.any().then(health::load).flatten();
         self.refreshing = store::is_running(Job::Cost);
         refresh::limits_if_due(&self.cfg, self.limits.as_ref());
         refresh::cost_if_stale(&self.cfg, self.cost.as_ref());
@@ -123,19 +123,6 @@ fn pct_color(pct: f64) -> Color {
         p if p >= 75.0 => Color::Red,
         p if p >= 50.0 => Color::Yellow,
         _ => Color::Green,
-    }
-}
-
-fn human_reset(secs: i64) -> String {
-    let d = secs / 86400;
-    let h = (secs % 86400) / 3600;
-    let m = (secs % 3600) / 60;
-    if d > 0 {
-        format!("{d}d {h}h")
-    } else if h > 0 {
-        format!("{h}h {m:02}m")
-    } else {
-        format!("{m}m")
     }
 }
 
@@ -185,7 +172,7 @@ fn draw_limits(frame: &mut Frame, area: Rect, app: &App) {
     let row = |label: &str, w: Window| -> Line {
         let reset = w
             .resets_in(now)
-            .map(|r| format!("  resets {}", human_reset(r)))
+            .map(|r| format!("  resets {}", ago(r)))
             .unwrap_or_default();
         let filled = bar(w.percent / 100.0, bar_w);
         let pad = " ".repeat(bar_w.saturating_sub(filled.chars().count()));
@@ -217,7 +204,7 @@ fn draw_limits(frame: &mut Frame, area: Rect, app: &App) {
     }
     let age = snap.age(now);
     let staleness = if age > app.cfg.limits.max_age_seconds {
-        format!("{} ago", human_reset(age))
+        format!("{} ago", ago(age))
     } else {
         "live".into()
     };
@@ -273,7 +260,7 @@ fn host_lines(c: &Costs, hosts: &[Host], days: i64) -> Vec<Line<'static>> {
                 // when the copy is stale enough to matter.
                 let style = if age > 30 * 60 { warn } else { dim };
                 sync.push(Span::styled(
-                    format!("{} synced {} ago", h.name, human_reset(age)),
+                    format!("{} synced {} ago", h.name, ago(age)),
                     style,
                 ));
             }
@@ -402,29 +389,16 @@ fn health_rows(app: &App) -> Vec<Line<'_>> {
             Style::default().fg(Color::DarkGray),
         )];
     };
-    let wrong = |l: &str| {
-        l.starts_with("incident:")
-            || l.contains("available")
-            || l.starts_with("run `")
-            || l.starts_with("background auto-updates")
-            || (l.starts_with("status: ") && !l.contains("All Systems Operational"))
-            || (l.contains(": ") && l.ends_with("_outage"))
-            || l.ends_with("degraded_performance")
-            || l.ends_with("partial_outage")
-    };
-    let unknown =
-        |l: &str| l.contains("unavailable") || l.contains("unknown") || l.contains("skipped");
-    health::lines(snap, store::now(), false)
+    health::lines(snap)
         .into_iter()
-        .map(|l| {
-            let style = if wrong(&l) {
-                Style::default().fg(Color::Red)
-            } else if unknown(&l) {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default().fg(Color::Green)
+        .chain(health::age_line(snap, store::now()))
+        .map(|line| {
+            let colour = match line.severity {
+                health::Severity::Ok => Color::Green,
+                health::Severity::Warn => Color::Red,
+                health::Severity::Unknown => Color::DarkGray,
             };
-            Line::styled(l, style)
+            Line::styled(line.text, Style::default().fg(colour))
         })
         .collect()
 }
@@ -537,16 +511,18 @@ fn draw(frame: &mut Frame, app: &App) {
     } else {
         vec![]
     };
-    let mut constraints = vec![
-        // Each pane sized to its content. Projects takes whatever is left: it
-        // is the longest list and the least consulted.
-        Constraint::Length(limit_lines as u16 + 2),
-        Constraint::Length(models.len().max(1) as u16 + 2),
-        Constraint::Min(3),
-    ];
-    if !health.is_empty() {
-        constraints.insert(1, Constraint::Length(health.len() as u16 + 2));
-    }
+    // Each pane is sized to its content as it is added, and remembers its own
+    // index, so the health pane being absent cannot shift anything out from
+    // under the panes below it. Projects takes whatever is left: it is the
+    // longest list and the least consulted.
+    let mut constraints = vec![Constraint::Length(limit_lines as u16 + 2)];
+    let mut add = |c: Constraint| {
+        constraints.push(c);
+        constraints.len() - 1
+    };
+    let health_at = (!health.is_empty()).then(|| add(Constraint::Length(health.len() as u16 + 2)));
+    let models_at = add(Constraint::Length(models.len().max(1) as u16 + 2));
+    let projects_at = add(Constraint::Min(3));
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
@@ -554,21 +530,24 @@ fn draw(frame: &mut Frame, app: &App) {
 
     draw_spend(frame, cols[0], app);
     draw_limits(frame, right[0], app);
-    let rest = if health.is_empty() {
-        1
-    } else {
-        draw_health(frame, right[1], health);
-        2
-    };
-    draw_list(frame, right[rest], " models ", app, models);
-    draw_list(frame, right[rest + 1], " projects ", app, project_rows(app));
+    if let Some(at) = health_at {
+        draw_health(frame, right[at], health);
+    }
+    draw_list(frame, right[models_at], " models ", app, models);
+    draw_list(
+        frame,
+        right[projects_at],
+        " projects ",
+        app,
+        project_rows(app),
+    );
     let mut footer = String::from("q quit · r refresh · ↑↓ scroll");
     // How old the spend figures are. A failed refresh keeps the old figures up,
     // so this age, and the failure note, are what tell a current dashboard from
     // a stale one.
     if let Some(snap) = &app.cost {
         let age = (store::now() - snap.generated_at).max(0);
-        footer.push_str(&format!(" · spend {} old", human_reset(age)));
+        footer.push_str(&format!(" · spend {} old", ago(age)));
         if app.cost_state.last_error.is_some() {
             footer.push_str(" · last refresh failed");
         }

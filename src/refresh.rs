@@ -261,7 +261,7 @@ pub fn run(cfg: &Config, job: Job, force: bool) -> i32 {
         Job::Cost => cost::refresh(cfg),
         Job::Limits => limits::refresh(),
         Job::Sync => sync::run_due(cfg, force),
-        Job::Health => health::refresh(cfg.health.status, cfg.health.version),
+        Job::Health => health::refresh(&cfg.health),
     };
     record_outcome(&mut state, &outcome, store::now());
     store::save_job_state(job, &state);
