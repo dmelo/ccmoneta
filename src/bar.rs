@@ -483,6 +483,8 @@ mod tests {
         let c = cost_snap();
         let healthy = HealthSnapshot {
             checked_at: NOW - 60,
+            status_at: Some(NOW - 60),
+            version_at: Some(NOW - 60),
             status: Some(ServiceStatus {
                 indicator: "none".into(),
                 description: "All Systems Operational".into(),
