@@ -30,12 +30,12 @@ impl Sandbox {
         fs::write(
             &fake,
             r#"#!/bin/bash
-echo "$1" >> "$FAKE_LOG"
+echo "$1 $2" >> "$FAKE_LOG"
 if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi
 if [ "$FAKE_FAIL" = 1 ]; then echo "fake ccusage failure" >&2; exit 1; fi
-case "$1" in
-  daily) printf '{"daily":[{"period":"%s","totalCost":12.34,"totalTokens":100,"modelBreakdowns":[{"modelName":"claude-opus-5","cost":12.34}]}]}' "$(date +%Y-%m-%d)" ;;
-  session) printf '{"session":[]}' ;;
+case "$1 $2" in
+  "claude daily") printf '{"daily":[{"date":"%s","totalCost":12.34,"totalTokens":100,"modelBreakdowns":[{"modelName":"claude-opus-5","cost":12.34}]}]}' "$(date +%Y-%m-%d)" ;;
+  "claude session") printf '{"sessions":[]}' ;;
 esac
 "#,
         )
@@ -189,8 +189,12 @@ fn many_stale_callers_at_once_start_one_refresh() {
     });
     // Give any straggler that lost the race time to start, check, and exit.
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(sb.calls("daily"), 1, "one host, so exactly one daily run");
-    assert_eq!(sb.calls("session"), 1);
+    assert_eq!(
+        sb.calls("claude daily"),
+        1,
+        "one host, so exactly one daily run"
+    );
+    assert_eq!(sb.calls("claude session"), 1);
 }
 
 #[test]
@@ -204,7 +208,7 @@ fn the_hook_returns_at_once_while_a_refresh_is_running() {
     assert!(took < Duration::from_secs(2), "hook took {took:?}");
     assert!(String::from_utf8(out.stdout).unwrap().contains("$…"));
     wait_until("the refresh to start", Duration::from_secs(5), || {
-        sb.calls("daily") == 1
+        sb.calls("claude daily") == 1
     });
     assert!(sb.cost_job_running(), "the refresh should still be running");
     assert!(!exists(&sb.cache("cost.json")));
@@ -239,7 +243,11 @@ fn a_failing_refresh_shows_a_marker_and_backs_off() {
         sb.bar(&fail);
     }
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(sb.calls("daily"), 1, "backoff should stop further attempts");
+    assert_eq!(
+        sb.calls("claude daily"),
+        1,
+        "backoff should stop further attempts"
+    );
 }
 
 #[test]

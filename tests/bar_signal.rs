@@ -27,7 +27,7 @@ fn a_successful_refresh_signals_the_named_bar() {
     let ccusage = root.join("fake-ccusage");
     fs::write(
         &ccusage,
-        "#!/bin/bash\ncase \"$1\" in daily) printf '{\"daily\":[]}';; session) printf '{\"session\":[]}';; esac\n",
+        "#!/bin/bash\ncase \"$1 $2\" in \"claude daily\") printf '{\"daily\":[]}';; \"claude session\") printf '{\"sessions\":[]}';; esac\n",
     )
     .unwrap();
     let handler = root.join("handler.sh");

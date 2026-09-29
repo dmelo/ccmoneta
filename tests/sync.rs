@@ -52,7 +52,7 @@ cd "$FAKE_REMOTE_HOME" && HOME="$FAKE_REMOTE_HOME" exec bash -c "$*"
         )
         .unwrap();
         let ccusage = root.join("fake-ccusage");
-        fs::write(&ccusage, "#!/bin/bash\ncase \"$1\" in daily) printf '{\"daily\":[]}';; session) printf '{\"session\":[]}';; esac\n").unwrap();
+        fs::write(&ccusage, "#!/bin/bash\ncase \"$1 $2\" in \"claude daily\") printf '{\"daily\":[]}';; \"claude session\") printf '{\"sessions\":[]}';; esac\n").unwrap();
         Command::new("chmod")
             .arg("+x")
             .arg(&ssh)

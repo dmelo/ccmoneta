@@ -34,6 +34,27 @@ impl Report {
     }
 }
 
+/// A ccusage verified to count every entry; releases between it and 20.0.20
+/// were not checked, so this is a floor that is safe, not the exact first fix.
+/// 20.0.20 skips any assistant
+/// entry whose `usage.iterations[]` carries `"model": null`, as newer Claude
+/// Code writes it, and exits 0 without a warning, so those calls are simply
+/// missing from every total.
+const CCUSAGE_MIN: [u32; 3] = [20, 0, 26];
+
+/// Whether `ccusage --version` output names a release older than CCUSAGE_MIN.
+/// Output that does not parse is not called old: doctor has already shown it.
+fn ccusage_too_old(version: &str) -> bool {
+    let Some(v) = version.split_whitespace().last() else {
+        return false;
+    };
+    let parts: Option<Vec<u32>> = v.split('.').map(|p| p.parse().ok()).collect();
+    match parts {
+        Some(p) if p.len() == 3 => p.as_slice() < CCUSAGE_MIN.as_slice(),
+        _ => false,
+    }
+}
+
 /// The first line of `<program> <arg>`, or why it could not run.
 fn version_of(program: impl AsRef<OsStr>, arg: &str) -> Result<String, String> {
     let out = Command::new(program.as_ref())
@@ -134,6 +155,10 @@ pub fn run(cfg: &Config, cfg_error: Option<&str>) -> i32 {
 
     println!("spend");
     match version_of(cost::ccusage_exe(), "--version") {
+        Ok(v) if ccusage_too_old(&v) => r.warn(&format!(
+            "ccusage: {v}; older than {}, which silently drops transcript entries written by newer Claude Code, so spend reads low. Upgrade: `npm install -g ccusage@latest`",
+            CCUSAGE_MIN.map(|n| n.to_string()).join(".")
+        )),
         Ok(v) => r.ok(&format!("ccusage: {v}")),
         Err(e) => r.fail(&format!(
             "ccusage: {e}; install it with `npm install -g ccusage`, or set CCMONETA_CCUSAGE"
@@ -259,4 +284,21 @@ pub fn run(cfg: &Config, cfg_error: Option<&str>) -> i32 {
     }
 
     i32::from(r.failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ccusage_too_old;
+
+    #[test]
+    fn ccusage_below_the_floor_is_old() {
+        assert!(ccusage_too_old("ccusage 20.0.20"));
+        assert!(ccusage_too_old("ccusage 19.9.99"));
+        assert!(!ccusage_too_old("ccusage 20.0.26"));
+        assert!(!ccusage_too_old("ccusage 20.1.0"));
+        assert!(!ccusage_too_old("ccusage 99.0.0"));
+        // Unparseable output is shown as-is rather than called old.
+        assert!(!ccusage_too_old("ccusage dev"));
+        assert!(!ccusage_too_old(""));
+    }
 }
