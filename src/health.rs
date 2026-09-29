@@ -146,11 +146,17 @@ impl VersionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct HealthSnapshot {
+    /// When the job last ran, successfully or not.
     pub checked_at: i64,
     pub status: Option<ServiceStatus>,
+    /// When `status` was actually answered, which is older than `checked_at`
+    /// when a later check failed and this answer was kept.
+    pub status_at: Option<i64>,
     pub status_error: Option<String>,
     pub version: Option<VersionState>,
+    pub version_at: Option<i64>,
     pub version_error: Option<String>,
 }
 
@@ -557,9 +563,15 @@ fn curl_text(url: &str) -> Result<String, String> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let detail = stderr.lines().rev().find(|l| !l.trim().is_empty());
+        // `ExitStatus` renders as "exit status: 28", which reads badly inside a
+        // sentence that already says "exited".
+        let code = out
+            .status
+            .code()
+            .map_or_else(|| "a signal".to_string(), |c| c.to_string());
         return Err(match detail {
-            Some(d) => format!("curl exited {}: {}", out.status, d.trim()),
-            None => format!("curl exited {}", out.status),
+            Some(d) => format!("curl exited with {code}: {}", d.trim()),
+            None => format!("curl exited with {code}"),
         });
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -588,23 +600,30 @@ pub fn refresh(cfg: &HealthConfig) -> Result<(), String> {
         )
     });
 
-    /// A check that did not run leaves both halves empty; one that ran leaves
-    /// exactly one.
-    fn split<T>(run: Option<Result<T, String>>) -> (Option<T>, Option<String>) {
-        match run {
-            Some(Ok(v)) => (Some(v), None),
-            Some(Err(e)) => (None, Some(e)),
-            None => (None, None),
-        }
-    }
-    let (status, status_error) = split(status_run);
-    let (version, version_error) = split(version_run);
+    let previous = load();
+    let now = store::now();
+    let (status, status_at, status_error) = fold(
+        status_run,
+        previous
+            .as_ref()
+            .and_then(|p| Some((p.status.clone()?, p.status_at.unwrap_or(p.checked_at)))),
+        now,
+    );
+    let (version, version_at, version_error) = fold(
+        version_run,
+        previous
+            .as_ref()
+            .and_then(|p| Some((p.version.clone()?, p.version_at.unwrap_or(p.checked_at)))),
+        now,
+    );
 
     let snap = HealthSnapshot {
-        checked_at: store::now(),
+        checked_at: now,
         status,
+        status_at,
         status_error,
         version,
+        version_at,
         version_error,
     };
     let errors: Vec<&str> = [snap.status_error.as_deref(), snap.version_error.as_deref()]
@@ -616,6 +635,28 @@ pub fn refresh(cfg: &HealthConfig) -> Result<(), String> {
         Ok(())
     } else {
         Err(errors.join("; "))
+    }
+}
+
+/// One check's outcome, folded together with what the last run knew.
+///
+/// A failed check keeps the previous answer rather than blanking it: a DNS
+/// stall on this machine says nothing about Claude, and a 15-minute hole in the
+/// dashboard is worse than an answer with its age attached. The error is still
+/// reported, so the surface can say the check itself did not get through.
+fn fold<T>(
+    run: Option<Result<T, String>>,
+    previous: Option<(T, i64)>,
+    now: i64,
+) -> (Option<T>, Option<i64>, Option<String>) {
+    match run {
+        Some(Ok(value)) => (Some(value), Some(now), None),
+        Some(Err(e)) => match previous {
+            Some((value, at)) => (Some(value), Some(at), Some(e)),
+            None => (None, None, Some(e)),
+        },
+        // The check is switched off: no value, and nothing went wrong.
+        None => (None, None, None),
     }
 }
 
@@ -652,6 +693,12 @@ pub fn lines(snap: &HealthSnapshot) -> Vec<HealthLine> {
         (None, Some(e)) => out.push(HealthLine::unknown(format!("status unavailable: {e}"))),
         (None, None) => {}
     }
+    // The status above is the last answer, kept because this check failed.
+    if snap.status.is_some()
+        && let Some(e) = &snap.status_error
+    {
+        out.push(HealthLine::unknown(format!("status not rechecked: {e}")));
+    }
     match (&snap.version, &snap.version_error) {
         (Some(v), _) => {
             let behind = v.behind();
@@ -687,6 +734,11 @@ pub fn lines(snap: &HealthSnapshot) -> Vec<HealthLine> {
         }
         (None, Some(e)) => out.push(HealthLine::unknown(format!("version unknown: {e}"))),
         (None, None) => {}
+    }
+    if snap.version.is_some()
+        && let Some(e) = &snap.version_error
+    {
+        out.push(HealthLine::unknown(format!("version not rechecked: {e}")));
     }
     out
 }
@@ -757,8 +809,10 @@ mod tests {
     fn snapshot(status: Option<ServiceStatus>, version: Option<VersionState>) -> HealthSnapshot {
         HealthSnapshot {
             checked_at: 1_800_000_000,
+            status_at: Some(1_800_000_000),
             status,
             status_error: None,
+            version_at: Some(1_800_000_000),
             version,
             version_error: None,
         }
@@ -999,6 +1053,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_failed_check_keeps_the_last_answer_instead_of_blanking_it() {
+        const NOW: i64 = 1_800_000_000;
+        let answered = parse_summary(&summary("none", "operational", "")).unwrap();
+
+        // First run answers.
+        let (v, at, err) = fold(Some(Ok(answered.clone())), None, NOW - 900);
+        assert_eq!((at, err), (Some(NOW - 900), None));
+        assert!(v.is_some());
+
+        // The next run cannot resolve the host. The answer and its age stay;
+        // the error rides alongside rather than replacing them.
+        let previous = Some((v.unwrap(), NOW - 900));
+        let (v, at, err) = fold(
+            Some(Err("curl exited with 28: Resolving timed out".into())),
+            previous,
+            NOW,
+        );
+        assert!(v.is_some(), "a DNS stall says nothing about Claude");
+        assert_eq!(at, Some(NOW - 900), "the age is of the answer, not the try");
+        assert!(err.unwrap().contains("Resolving timed out"));
+
+        // With nothing to keep, it stays empty and says why.
+        let (v, at, err) = fold::<ServiceStatus>(Some(Err("boom".into())), None, NOW);
+        assert!(v.is_none() && at.is_none());
+        assert_eq!(err.as_deref(), Some("boom"));
+
+        // Switched off: no value, and nothing went wrong.
+        let (v, at, err) = fold::<ServiceStatus>(None, None, NOW);
+        assert!(v.is_none() && at.is_none() && err.is_none());
+    }
+
+    #[test]
+    fn a_kept_answer_is_shown_with_a_note_that_it_was_not_rechecked() {
+        let s = parse_summary(&summary("none", "operational", "")).unwrap();
+        let mut snap = snapshot(Some(s), None);
+        snap.status_error = Some("curl exited with 28: Resolving timed out".into());
+        let out = lines(&snap);
+        // The real status still reads as fine...
+        assert!(
+            out.iter()
+                .any(|l| l.text == "status: All Systems Operational" && l.severity == Severity::Ok),
+            "{out:?}"
+        );
+        // ...and the failure to recheck is unknown, never a warning.
+        assert!(
+            out.iter()
+                .any(|l| l.text.starts_with("status not rechecked")
+                    && l.severity == Severity::Unknown),
+            "{out:?}"
+        );
+        assert!(!snap.needs_attention(), "a stalled lookup is not an alarm");
+        assert_eq!(marker(Some(&snap)), None);
+    }
+
     /// Each of these was mislabelled while severity was re-derived from the
     /// wording: a failed fetch read as an available update because
     /// "unavailable" contains "available", a component outage printed as ok in
@@ -1007,8 +1116,10 @@ mod tests {
     fn a_line_carries_its_own_severity_rather_than_being_read_back_from_its_words() {
         let unreachable = HealthSnapshot {
             checked_at: 1_800_000_000,
+            status_at: None,
             status: None,
-            status_error: Some("curl exited 6".into()),
+            status_error: Some("curl exited with 6".into()),
+            version_at: None,
             version: None,
             version_error: None,
         };
