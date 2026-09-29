@@ -106,7 +106,7 @@ List the other machines under `[[sync.hosts]]`. Each must be reachable with `ssh
 ## How the numbers are computed
 
 - **Limits** are per Claude account, so they are shown as reported and never summed across machines.
-- **Spend** runs `ccusage daily` once per machine, in parallel, and adds the results, so the per-machine figures always add up to the totals.
+- **Spend** runs `ccusage claude daily` once per machine, in parallel, and adds the results, so the per-machine figures always add up to the totals.
 - **Per-project spend** comes from ccusage's session report, which is not guaranteed to add up to the daily totals; it can come out higher.
 - **Service status** comes from `https://status.claude.com/api/v2/summary.json`: the overall indicator, the `Claude Code` component, any component that is not operational, and the unresolved incidents.
 - **The published Claude Code version** is looked up the way Claude Code's own updater does, because where it lives depends on how Claude Code was installed: a native install reads `https://downloads.claude.ai/claude-code-releases/<channel>`, an npm or bun global install runs `npm view` against a pinned registry from your home directory, and a Homebrew install reads its own cask, whose channel is fixed by the cask name rather than by settings. The channel is `autoUpdatesChannel` from Claude Code's settings, defaulting to `latest`, and only ever the literal `stable` or `latest`. Versions are compared numerically, so an install ahead of its channel reads as current rather than behind.

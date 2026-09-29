@@ -32,7 +32,9 @@ pub struct ModelBreakdown {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Entry {
-    /// A date for `daily`, a session UUID for `session`.
+    /// A date for `daily`, a session UUID for `session`. `ccusage claude`
+    /// names it `date` or `sessionId`; the all-agent reports call both `period`.
+    #[serde(alias = "date", alias = "sessionId")]
     pub period: String,
     #[serde(rename = "totalCost")]
     pub total_cost: f64,
@@ -52,7 +54,7 @@ struct DailyReport {
 
 #[derive(Debug, Deserialize)]
 struct SessionReport {
-    #[serde(default)]
+    #[serde(default, alias = "sessions")]
     session: Vec<Entry>,
 }
 
@@ -191,9 +193,15 @@ fn ccusage(args: &[&str], hosts: &[Host]) -> Result<Vec<u8>, String> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let detail = stderr.lines().rev().find(|l| !l.trim().is_empty());
+        let command = args
+            .iter()
+            .take_while(|a| !a.starts_with('-'))
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
         return Err(match detail {
-            Some(d) => format!("ccusage {} exited {}: {}", args[0], out.status, d.trim()),
-            None => format!("ccusage {} exited {}", args[0], out.status),
+            Some(d) => format!("ccusage {command} exited {}: {}", out.status, d.trim()),
+            None => format!("ccusage {command} exited {}", out.status),
         });
     }
     Ok(out.stdout)
@@ -298,8 +306,12 @@ pub fn gather(days: i64) -> Result<Costs, String> {
             .map(|host| {
                 let since = since.as_str();
                 s.spawn(move || -> Result<DailyReport, String> {
+                    // `claude daily`, not `daily`: in ccusage 20 the bare
+                    // report covers every agent CLI it finds (OpenCode, Codex,
+                    // ...) on this machine, whatever CLAUDE_CONFIG_DIR says, so
+                    // this machine's other agents would be added once per host.
                     let raw = ccusage(
-                        &["daily", "--json", "--breakdown", "--since", since],
+                        &["claude", "daily", "--json", "--breakdown", "--since", since],
                         std::slice::from_ref(host),
                     )?;
                     serde_json::from_slice(&raw)
@@ -390,7 +402,7 @@ pub fn gather(days: i64) -> Result<Costs, String> {
     // the dashboard, so a broken session report just leaves the pane empty.
     // They come from the session report, so they need not add up to the daily
     // totals; over the same window that report came out higher.
-    if let Ok(raw) = ccusage(&["session", "--json", "--since", &since], &hosts)
+    if let Ok(raw) = ccusage(&["claude", "session", "--json", "--since", &since], &hosts)
         && let Ok(report) = serde_json::from_slice::<SessionReport>(&raw)
     {
         let map = session_projects(&hosts);
