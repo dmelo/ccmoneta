@@ -9,25 +9,33 @@
 //! calendar day for a month. Limits are a few fixed lines, so they take a
 //! strip.
 //!
+//! ↑↓ (or the mouse wheel) move a cursor through the days; Enter or a click
+//! pins that day, and models and projects then show that day alone, titled
+//! with its date. Enter on the pinned day, or Esc, returns to the window.
+//!
 //! Everything on screen comes from the shared cache, re-read every couple of
 //! seconds. The refreshes that fill it run as separate `ccmoneta refresh`
 //! processes shared with the bar and the status line (see refresh.rs), so the
 //! dashboard never blocks on ccusage or the network, and closing it does not
 //! stop the bar or the status line from being correct.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
 use chrono::{Datelike, NaiveDate, Weekday};
 use ratatui::Frame;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+    MouseEventKind,
+};
+use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::config::Config;
-use crate::cost::{self, CostSnapshot, Costs, Host};
+use crate::cost::{self, CostSnapshot, Costs, Host, ModelBreakdown, Project};
 use crate::health::{self, HealthSnapshot};
 use crate::limits::{self, Snapshot, Window};
 use crate::refresh;
@@ -48,12 +56,20 @@ struct App {
     hosts: Vec<Host>,
     refreshing: bool,
     read_at: Instant,
-    /// Rows scrolled past the newest day.
-    scroll: usize,
-    /// The largest useful `scroll` for the current pane height. Written by the
-    /// draw pass, which is the only place that knows how many rows fit, so the
-    /// scroll keys can clamp to it and ↑ never has to unwind phantom overshoot.
-    max_scroll: Cell<usize>,
+    /// The day under the cursor, as an index into the days newest first.
+    cursor: usize,
+    /// The day models and projects are showing, "YYYY-MM-DD"; None for the
+    /// whole window. Kept as a date, not an index, so it stays on its day when
+    /// midnight shifts every row down one.
+    pinned: Option<String>,
+    /// Rows scrolled past the newest day. Set by the draw pass, the only place
+    /// that knows how many rows fit, so that the cursor stays in view.
+    scroll: Cell<usize>,
+    /// Where each visible day was drawn: (screen row, index newest first),
+    /// for mapping a click back to its day. Written by the draw pass.
+    day_rows: RefCell<Vec<(u16, usize)>>,
+    /// The spend pane, so a click elsewhere on a matching row is not a day.
+    spend_area: Cell<Rect>,
 }
 
 impl App {
@@ -68,8 +84,11 @@ impl App {
             hosts: Vec::new(),
             refreshing: false,
             read_at: Instant::now(),
-            scroll: 0,
-            max_scroll: Cell::new(0),
+            cursor: 0,
+            pinned: None,
+            scroll: Cell::new(0),
+            day_rows: RefCell::new(Vec::new()),
+            spend_area: Cell::new(Rect::default()),
         };
         app.reload();
         app
@@ -90,6 +109,15 @@ impl App {
         refresh::sync_if_due(&self.cfg);
         refresh::health_if_due(&self.cfg, self.health.as_ref());
         self.read_at = Instant::now();
+        // The window moves at midnight: a pinned day that has left it has
+        // nothing left to show, and the cursor must stay on a row.
+        let count = self.day_count();
+        self.cursor = self.cursor.min(count.saturating_sub(1));
+        if let (Some(day), Some(c)) = (&self.pinned, self.costs())
+            && !c.daily.iter().any(|(d, _)| d == day)
+        {
+            self.pinned = None;
+        }
     }
 
     fn tick(&mut self) {
@@ -115,6 +143,82 @@ impl App {
 
     fn days(&self) -> i64 {
         self.cfg.cost.window_days
+    }
+
+    fn day_count(&self) -> usize {
+        self.costs().map_or(0, |c| c.daily.len())
+    }
+
+    /// The date of the day at `index`, newest first.
+    fn day_at(&self, index: usize) -> Option<String> {
+        let c = self.costs()?;
+        c.daily.iter().rev().nth(index).map(|(d, _)| d.clone())
+    }
+
+    fn move_cursor(&mut self, by: isize) {
+        let last = self.day_count().saturating_sub(1);
+        self.cursor = self.cursor.saturating_add_signed(by).min(last);
+    }
+
+    /// Pin the day at `index`, or unpin it if it is the one already pinned.
+    fn toggle(&mut self, index: usize) {
+        self.cursor = index;
+        let day = self.day_at(index);
+        self.pinned = if day == self.pinned { None } else { day };
+    }
+
+    /// The day index drawn at screen position (x, y), if it is one.
+    fn day_under(&self, x: u16, y: u16) -> Option<usize> {
+        let area = self.spend_area.get();
+        if x < area.x || x >= area.x + area.width {
+            return None;
+        }
+        self.day_rows
+            .borrow()
+            .iter()
+            .find(|(row, _)| *row == y)
+            .map(|(_, i)| *i)
+    }
+
+    /// What models and projects show: the pinned day, or the whole window.
+    fn view(&self) -> Option<View<'_>> {
+        let c = self.costs()?;
+        Some(match &self.pinned {
+            None => View {
+                day: None,
+                models: &c.models,
+                projects: &c.projects,
+                cache_read_tokens: c.cache_read_tokens,
+            },
+            // A day with no usage has no entry; it shows as empty.
+            Some(day) => {
+                let d = c.days.get(day);
+                View {
+                    day: NaiveDate::parse_from_str(day, "%Y-%m-%d").ok(),
+                    models: d.map_or(&[], |d| &d.models),
+                    projects: d.map_or(&[], |d| &d.projects),
+                    cache_read_tokens: d.map_or(0, |d| d.cache_read_tokens),
+                }
+            }
+        })
+    }
+}
+
+struct View<'a> {
+    /// The pinned day; None for the whole window.
+    day: Option<NaiveDate>,
+    models: &'a [ModelBreakdown],
+    projects: &'a [Project],
+    cache_read_tokens: u64,
+}
+
+impl View<'_> {
+    /// A pane title, naming the day when one is pinned.
+    fn title(&self, pane: &str) -> String {
+        match self.day {
+            Some(d) => format!(" {pane} · {} ", d.format("%b %d %a")),
+            None => format!(" {pane} "),
+        }
     }
 }
 
@@ -315,18 +419,28 @@ fn draw_spend(frame: &mut Frame, area: Rect, app: &App) {
         days.len()
     };
     let max_scroll = days.len().saturating_sub(visible);
-    app.max_scroll.set(max_scroll);
-    let scroll = app.scroll.min(max_scroll);
+    // Scroll only as far as it takes to keep the cursor on screen.
+    let cursor = app.cursor.min(days.len().saturating_sub(1));
+    let mut scroll = app.scroll.get().min(max_scroll);
+    if cursor < scroll {
+        scroll = cursor;
+    } else if visible > 0 && cursor >= scroll + visible {
+        scroll = cursor + 1 - visible;
+    }
+    app.scroll.set(scroll);
+    app.spend_area.set(inner);
+    let mut rows = Vec::new();
 
     // "Sep 12 Fri" (10) + 2 + bar + 2 + "$123.45" right-aligned in 9.
     let bar_w = (inner.width as usize).saturating_sub(23).max(4);
     let cap = scale_cap(&c.daily);
     let today = chrono::Local::now().date_naive();
 
-    for (day, cost) in days.iter().skip(scroll).take(visible) {
+    for (index, (day, cost)) in days.iter().enumerate().skip(scroll).take(visible) {
         let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
             continue;
         };
+        rows.push((inner.y + lines.len() as u16, index));
         let weekend = matches!(date.weekday(), Weekday::Sat | Weekday::Sun);
         let mut label_style = Style::default();
         if weekend {
@@ -334,6 +448,12 @@ fn draw_spend(frame: &mut Frame, area: Rect, app: &App) {
         }
         if date == today {
             label_style = label_style.add_modifier(Modifier::BOLD);
+        }
+        if app.pinned.as_deref() == Some(day.as_str()) {
+            label_style = label_style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        }
+        if index == cursor {
+            label_style = label_style.add_modifier(Modifier::REVERSED);
         }
 
         let mut spans = vec![
@@ -373,10 +493,11 @@ fn draw_spend(frame: &mut Frame, area: Rect, app: &App) {
         let first = scroll + 1;
         let last = scroll + visible;
         lines.push(Line::styled(
-            format!("↑↓ scroll · days {first}–{last} of {}", days.len()),
+            format!("days {first}–{last} of {}", days.len()),
             Style::default().fg(Color::DarkGray),
         ));
     }
+    app.day_rows.replace(rows);
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -425,11 +546,17 @@ fn draw_list(frame: &mut Frame, area: Rect, title: &str, app: &App, rows: Vec<Li
 }
 
 fn model_rows(app: &App) -> Vec<Line<'_>> {
-    let Some(c) = app.costs() else {
+    let Some(v) = app.view() else {
         return vec![];
     };
-    let total: f64 = c.models.iter().map(|m| m.cost).sum();
-    let mut out: Vec<Line> = c
+    if v.models.is_empty() && v.day.is_some() {
+        return vec![Line::styled(
+            "no usage on this day",
+            Style::default().fg(Color::DarkGray),
+        )];
+    }
+    let total: f64 = v.models.iter().map(|m| m.cost).sum();
+    let mut out: Vec<Line> = v
         .models
         .iter()
         .map(|m| {
@@ -451,7 +578,7 @@ fn model_rows(app: &App) -> Vec<Line<'_>> {
         format!(
             "{:<16} {:>9}",
             "cache read",
-            human_tokens(c.cache_read_tokens)
+            human_tokens(v.cache_read_tokens)
         ),
         Style::default().fg(Color::DarkGray),
     ));
@@ -459,13 +586,13 @@ fn model_rows(app: &App) -> Vec<Line<'_>> {
 }
 
 fn project_rows(app: &App) -> Vec<Line<'_>> {
-    let Some(c) = app.costs() else {
+    let (Some(c), Some(v)) = (app.costs(), app.view()) else {
         return vec![];
     };
     // Tag each project with its hosts only when more than one host is counted;
     // on a single machine the tag would say the same thing on every row.
     let tag_hosts = c.hosts.len() > 1;
-    c.projects
+    v.projects
         .iter()
         .map(|p| {
             let short: String = p.name.chars().take(24).collect();
@@ -533,15 +660,22 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(at) = health_at {
         draw_health(frame, right[at], health);
     }
-    draw_list(frame, right[models_at], " models ", app, models);
+    let (models_title, projects_title) = app.view().map_or_else(
+        || (" models ".to_string(), " projects ".to_string()),
+        |v| (v.title("models"), v.title("projects")),
+    );
+    draw_list(frame, right[models_at], &models_title, app, models);
     draw_list(
         frame,
         right[projects_at],
-        " projects ",
+        &projects_title,
         app,
         project_rows(app),
     );
-    let mut footer = String::from("q quit · r refresh · ↑↓ scroll");
+    let mut footer = String::from("q quit · r refresh · ↑↓ enter/click a day");
+    if app.pinned.is_some() {
+        footer.push_str(" · esc all days");
+    }
     // How old the spend figures are. A failed refresh keeps the old figures up,
     // so this age, and the failure note, are what tell a current dashboard from
     // a stale one.
@@ -563,30 +697,54 @@ fn draw(frame: &mut Frame, app: &App) {
 
 pub fn run(cfg: Config) -> std::io::Result<()> {
     let mut terminal = ratatui::init();
+    // Clicks pick a day. While the dashboard is open the terminal no longer
+    // selects text on a plain drag; holding Shift usually still does.
+    // Without it the keys still work, so a terminal that refuses is not fatal.
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let mut app = App::new(cfg);
+    // Every exit goes through the `break` below, errors included, so the
+    // terminal always gets mouse capture turned off and its screen restored.
     let result = loop {
         app.tick();
         if let Err(e) = terminal.draw(|frame| draw(frame, &app)) {
             break Err(e);
         }
         // Short poll so keys feel immediate without a busy loop.
-        if event::poll(Duration::from_millis(250))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
+        match event::poll(Duration::from_millis(250)) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => break Err(e),
+        }
+        let ev = match event::read() {
+            Ok(ev) => ev,
+            Err(e) => break Err(e),
+        };
+        match ev {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Char('q') => break Ok(()),
+                // Esc backs out of a pinned day first, and quits from the window.
+                KeyCode::Esc if app.pinned.is_some() => app.pinned = None,
+                KeyCode::Esc => break Ok(()),
                 KeyCode::Char('r') => app.refresh(),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    app.scroll = (app.scroll + 1).min(app.max_scroll.get());
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    app.scroll = app.scroll.saturating_sub(1);
-                }
+                KeyCode::Down | KeyCode::Char('j') => app.move_cursor(1),
+                KeyCode::Up | KeyCode::Char('k') => app.move_cursor(-1),
+                KeyCode::Enter => app.toggle(app.cursor),
                 _ => {}
-            }
+            },
+            Event::Mouse(m) => match m.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(i) = app.day_under(m.column, m.row) {
+                        app.toggle(i);
+                    }
+                }
+                MouseEventKind::ScrollDown => app.move_cursor(1),
+                MouseEventKind::ScrollUp => app.move_cursor(-1),
+                _ => {}
+            },
+            _ => {}
         }
     };
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }

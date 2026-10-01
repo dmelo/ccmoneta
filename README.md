@@ -47,7 +47,7 @@ ccmoneta doctor               # checks everything below, and says how to fix wha
 
 ## Dashboard
 
-`q` or `Esc` quits, `r` refreshes now, `↑`/`↓` or `k`/`j` scroll the day list. It shows limits, service status and the installed Claude Code version, a row per day of spend with the figure printed, spend per model and per project, and each mirrored machine's sync age. The footer says how old the spend figures are.
+`q` quits, `r` refreshes now. `↑`/`↓` (or `k`/`j`, or the mouse wheel) move through the days; `Enter` or a click shows that day's models and projects, titled with its date, and `Enter` again or `Esc` goes back to the whole window. `Esc` with no day picked quits. While the dashboard is open it takes the mouse; holding Shift while dragging usually still selects text. It shows limits, service status and the installed Claude Code version, a row per day of spend with the figure printed, spend per model and per project, and each mirrored machine's sync age. The footer says how old the spend figures are.
 
 ## Configuration
 
@@ -107,7 +107,7 @@ List the other machines under `[[sync.hosts]]`. Each must be reachable with `ssh
 
 - **Limits** are per Claude account, so they are shown as reported and never summed across machines.
 - **Spend** runs `ccusage claude daily` once per machine, in parallel, and adds the results, so the per-machine figures always add up to the totals.
-- **Per-project spend** comes from ccusage's session report, which is not guaranteed to add up to the daily totals; it can come out higher.
+- **Per-model and per-project spend**, for the window and for each day, come from the same run (`--breakdown --instances`), so they add up to the totals too. A project is labelled with the last two segments of its path, which also merges the same checkout across machines.
 - **Service status** comes from `https://status.claude.com/api/v2/summary.json`: the overall indicator, the `Claude Code` component, any component that is not operational, and the unresolved incidents.
 - **The published Claude Code version** is looked up the way Claude Code's own updater does, because where it lives depends on how Claude Code was installed: a native install reads `https://downloads.claude.ai/claude-code-releases/<channel>`, an npm or bun global install runs `npm view` against a pinned registry from your home directory, and a Homebrew install reads its own cask, whose channel is fixed by the cask name rather than by settings. The channel is `autoUpdatesChannel` from Claude Code's settings, defaulting to `latest`, and only ever the literal `stable` or `latest`. Versions are compared numerically, so an install ahead of its channel reads as current rather than behind.
 - Today's figure on the bar and status line reads `$12.34` when current, `~$12.34` when over an hour old, `$…` while the first refresh for today runs, and `$?` when refreshing failed.

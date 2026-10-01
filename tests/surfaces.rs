@@ -34,8 +34,9 @@ echo "$1 $2" >> "$FAKE_LOG"
 if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi
 if [ "$FAKE_FAIL" = 1 ]; then echo "fake ccusage failure" >&2; exit 1; fi
 case "$1 $2" in
-  "claude daily") printf '{"daily":[{"date":"%s","totalCost":12.34,"totalTokens":100,"modelBreakdowns":[{"modelName":"claude-opus-5","cost":12.34}]}]}' "$(date +%Y-%m-%d)" ;;
-  "claude session") printf '{"sessions":[]}' ;;
+  # Only the per-project report: a plain daily report would print nothing
+  # and fail to parse, so dropping --instances cannot pass unnoticed.
+  "claude daily") case " $* " in *" --instances "*) printf '{"projects":{"-home-me-code-project":[{"date":"%s","totalCost":12.34,"totalTokens":100,"modelBreakdowns":[{"modelName":"claude-opus-5","cost":12.34}]}]}}' "$(date +%Y-%m-%d)" ;; esac ;;
 esac
 "#,
         )
@@ -194,7 +195,11 @@ fn many_stale_callers_at_once_start_one_refresh() {
         1,
         "one host, so exactly one daily run"
     );
-    assert_eq!(sb.calls("claude session"), 1);
+    assert_eq!(
+        sb.calls("claude session"),
+        0,
+        "projects come from the daily run"
+    );
 }
 
 #[test]
