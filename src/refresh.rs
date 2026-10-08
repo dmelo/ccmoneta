@@ -52,6 +52,12 @@ pub fn cost_is_stale(
     if snap.date != today.format("%Y-%m-%d").to_string() {
         return true;
     }
+    // Written before per-day models and projects were gathered: spend but no
+    // days. Without this the selected day would stay empty until the next
+    // scheduled refresh.
+    if snap.costs.window > 0.0 && snap.costs.days.is_empty() {
+        return true;
+    }
     let covered: BTreeSet<&str> = snap.costs.hosts.iter().map(|h| h.name.as_str()).collect();
     let present: BTreeSet<&str> = hosts.iter().map(|(name, _)| name.as_str()).collect();
     if covered != present {
@@ -385,6 +391,24 @@ mod tests {
         assert!(!cost_is_stale(
             Some(&s),
             &earlier,
+            NOW,
+            day("2026-09-15"),
+            180
+        ));
+    }
+
+    #[test]
+    fn a_snapshot_with_spend_but_no_days_is_stale() {
+        let mut s = snap(NOW - 60, "2026-09-15", &["desk"]);
+        s.costs.window = 12.34;
+        let hosts = present(&[("desk", None)]);
+        assert!(cost_is_stale(Some(&s), &hosts, NOW, day("2026-09-15"), 180));
+        s.costs
+            .days
+            .insert("2026-09-15".into(), crate::cost::Day::default());
+        assert!(!cost_is_stale(
+            Some(&s),
+            &hosts,
             NOW,
             day("2026-09-15"),
             180
