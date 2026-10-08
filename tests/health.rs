@@ -38,7 +38,7 @@ impl Sandbox {
         let fake = root.join("fake-ccusage");
         fs::write(
             &fake,
-            "#!/bin/bash\ncase \"$1\" in\n  --version) echo 'ccusage 99.0.0' ;;\n  daily) printf '{\"daily\":[]}' ;;\n  session) printf '{\"session\":[]}' ;;\nesac\n",
+            "#!/bin/bash\ncase \"$1 $2\" in\n  \"--version \") echo 'ccusage 99.0.0' ;;\n  \"claude daily\") printf '{\"projects\":{}}' ;;\nesac\n",
         )
         .unwrap();
         Command::new("chmod").arg("+x").arg(&fake).status().unwrap();

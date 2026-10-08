@@ -8,14 +8,14 @@
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::Config;
 use crate::store::{self, JobState};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelBreakdown {
     #[serde(rename = "modelName")]
     pub model_name: String,
@@ -32,7 +32,9 @@ pub struct ModelBreakdown {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Entry {
-    /// A date for `daily`, a session UUID for `session`.
+    /// The day, "YYYY-MM-DD". `ccusage claude` names it `date`; the all-agent
+    /// reports call it `period`.
+    #[serde(alias = "date")]
     pub period: String,
     #[serde(rename = "totalCost")]
     pub total_cost: f64,
@@ -44,16 +46,12 @@ pub struct Entry {
     pub model_breakdowns: Vec<ModelBreakdown>,
 }
 
+/// `ccusage claude daily --instances`: each project's days, keyed by the
+/// project's transcript directory name.
 #[derive(Debug, Deserialize)]
-struct DailyReport {
+struct ProjectsReport {
     #[serde(default)]
-    daily: Vec<Entry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SessionReport {
-    #[serde(default)]
-    session: Vec<Entry>,
+    projects: HashMap<String, Vec<Entry>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,6 +74,20 @@ pub struct Costs {
     pub hosts: Vec<Host>,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
+    /// Models and projects for each day that had usage, keyed "YYYY-MM-DD".
+    /// The dashboard shows one when a day is selected.
+    pub days: BTreeMap<String, Day>,
+}
+
+/// Models and projects for one day, or summed over the whole window.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Day {
+    /// Per model, descending by cost.
+    pub models: Vec<ModelBreakdown>,
+    /// Per project, descending by cost.
+    pub projects: Vec<Project>,
+    pub cache_read_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,21 +176,14 @@ pub fn ccusage_exe() -> std::ffi::OsString {
         .unwrap_or_else(|| "ccusage".into())
 }
 
-fn ccusage(args: &[&str], hosts: &[Host]) -> Result<Vec<u8>, String> {
-    // Every host passed here is read in the same run: gather() passes one host
-    // per daily report and all of them for sessions. The list is
-    // comma-separated: ccusage rejects ':' outright. It also silently skips
-    // a path that does not exist, so a host with no data on disk would still be
-    // listed as counted while contributing nothing; hosts() returns only
-    // directories that actually contain projects/ to rule that out.
-    let dirs = hosts
-        .iter()
-        .map(|h| h.config_dir.display().to_string())
-        .collect::<Vec<_>>()
-        .join(",");
+fn ccusage(args: &[&str], host: &Host) -> Result<Vec<u8>, String> {
+    // One host per run. ccusage silently skips a CLAUDE_CONFIG_DIR that does
+    // not exist, so a host with no data on disk would still be listed as
+    // counted while contributing nothing; hosts() returns only directories
+    // that actually contain projects/ to rule that out.
     let out = Command::new(ccusage_exe())
         .args(args)
-        .env("CLAUDE_CONFIG_DIR", &dirs)
+        .env("CLAUDE_CONFIG_DIR", &host.config_dir)
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -191,116 +196,196 @@ fn ccusage(args: &[&str], hosts: &[Host]) -> Result<Vec<u8>, String> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let detail = stderr.lines().rev().find(|l| !l.trim().is_empty());
+        let command = args
+            .iter()
+            .take_while(|a| !a.starts_with('-'))
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
         return Err(match detail {
-            Some(d) => format!("ccusage {} exited {}: {}", args[0], out.status, d.trim()),
-            None => format!("ccusage {} exited {}", args[0], out.status),
+            Some(d) => format!("ccusage {command} exited {}: {}", out.status, d.trim()),
+            None => format!("ccusage {command} exited {}", out.status),
         });
     }
     Ok(out.stdout)
 }
 
-fn ymd(days_ago: i64) -> String {
-    (chrono::Local::now() - chrono::Duration::days(days_ago))
-        .format("%Y%m%d")
-        .to_string()
-}
-
-/// Map session UUID -> (project name, host name), across every host.
+/// A project's label: the last two segments of its transcript directory name.
 ///
-/// `ccusage session` keys by session UUID and carries no project field, but the
-/// transcripts are laid out as <config>/projects/<encoded-path>/<uuid>.jsonl,
-/// so the directory name recovers the project and the config dir the host. The
-/// encoded name is the absolute path with separators replaced by '-', which is
-/// lossy (a real '-' in a path is indistinguishable); we only ever show it as a
-/// label, never resolve it back to a path, so the ambiguity is harmless here.
-fn session_projects(hosts: &[Host]) -> HashMap<String, (String, String)> {
-    let mut map = HashMap::new();
-    for host in hosts {
-        let Ok(dirs) = std::fs::read_dir(host.config_dir.join("projects")) else {
-            continue;
-        };
-        for dir in dirs.flatten() {
-            label_sessions(&dir, &host.name, &mut map);
-        }
-    }
-    map
-}
-
-fn label_sessions(
-    dir: &std::fs::DirEntry,
-    host: &str,
-    map: &mut HashMap<String, (String, String)>,
-) {
-    let label = dir
-        .file_name()
-        .to_string_lossy()
-        .trim_matches('-')
-        .to_string();
-    // Keep the last two path segments: "-home-me-code-project" reads
-    // better as "code/project" than as the whole absolute path.
-    let short = label
+/// ccusage keys projects by that directory name, which is the absolute path
+/// with separators replaced by '-'. That is lossy (a real '-' in a path is
+/// indistinguishable from a separator), but "-home-me-code-project" reads
+/// better as "code/project" than as the whole path, and the label is only ever
+/// shown, never resolved back to a path. The same checkout lives under a
+/// different home path on each machine, so the label is also what merges it.
+fn project_label(dir: &str) -> String {
+    dir.trim_matches('-')
         .rsplit('-')
         .take(2)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .collect::<Vec<_>>()
-        .join("/");
-    // Walk the whole project directory, not just its top level. Workflow
-    // runs live at <uuid>/subagents/workflows/wf_<id>/, and ccusage reports
-    // each as a session named after that directory, so directory names are
-    // recorded against the project as well as transcript file stems.
-    let mut stack = vec![dir.path()];
-    while let Some(path) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&path) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            // file_type() does not follow symlinks, so a link cannot loop the walk.
-            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-            let id = if is_dir {
-                Some(name.as_str())
-            } else {
-                name.strip_suffix(".jsonl")
-            };
-            if let Some(id) = id {
-                map.entry(id.to_string())
-                    .or_insert_with(|| (short.clone(), host.to_string()));
-            }
-            if is_dir {
-                stack.push(e.path());
-            }
+        .join("/")
+}
+
+fn by_cost_desc<T>(items: &mut [T], cost: impl Fn(&T) -> f64) {
+    items.sort_by(|a, b| {
+        cost(b)
+            .partial_cmp(&cost(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
+/// Models and projects summed over a set of days: the whole window, or one day.
+#[derive(Default)]
+struct Tally {
+    models: HashMap<String, ModelBreakdown>,
+    /// Project label -> (cost, hosts it ran on).
+    projects: HashMap<String, (f64, BTreeSet<String>)>,
+    cache_read_tokens: u64,
+}
+
+impl Tally {
+    fn add(&mut self, host: &str, project: &str, e: &Entry) {
+        for m in &e.model_breakdowns {
+            let slot = self
+                .models
+                .entry(m.model_name.clone())
+                .or_insert_with(|| ModelBreakdown {
+                    model_name: m.model_name.clone(),
+                    ..Default::default()
+                });
+            slot.cost += m.cost;
+            slot.input_tokens += m.input_tokens;
+            slot.output_tokens += m.output_tokens;
+            slot.cache_read_tokens += m.cache_read_tokens;
+            slot.cache_creation_tokens += m.cache_creation_tokens;
+        }
+        let slot = self.projects.entry(project.to_string()).or_default();
+        slot.0 += e.total_cost;
+        slot.1.insert(host.to_string());
+        self.cache_read_tokens += e.cache_read_tokens;
+    }
+
+    fn finish(self) -> Day {
+        let mut models: Vec<ModelBreakdown> = self.models.into_values().collect();
+        by_cost_desc(&mut models, |m| m.cost);
+        let mut projects: Vec<Project> = self
+            .projects
+            .into_iter()
+            .map(|(name, (cost, hosts))| Project {
+                name,
+                cost,
+                hosts: hosts.into_iter().collect(),
+            })
+            .collect();
+        by_cost_desc(&mut projects, |p| p.cost);
+        Day {
+            models,
+            projects,
+            cache_read_tokens: self.cache_read_tokens,
         }
     }
 }
 
+/// Fold each host's report into the dashboard's figures. The window runs from
+/// `first` to `today`, both included.
+fn assemble(reports: &[(String, ProjectsReport)], first: NaiveDate, today: NaiveDate) -> Costs {
+    let key = |d: NaiveDate| d.format("%Y-%m-%d").to_string();
+    let today_key = key(today);
+    let week_start = key(today - chrono::Duration::days(6));
+
+    let mut costs = Costs::default();
+    let mut window = Tally::default();
+    let mut days: BTreeMap<String, Tally> = BTreeMap::new();
+    let mut by_day: HashMap<String, f64> = HashMap::new();
+    for (host, report) in reports {
+        let mut host_total = 0.0;
+        for (dir, entries) in &report.projects {
+            let project = project_label(dir);
+            for e in entries {
+                host_total += e.total_cost;
+                *by_day.entry(e.period.clone()).or_default() += e.total_cost;
+                if e.period == today_key {
+                    costs.today += e.total_cost;
+                }
+                if e.period >= week_start {
+                    costs.week += e.total_cost;
+                }
+                // ccusage was asked for exactly the window, so every entry is in it.
+                costs.window += e.total_cost;
+                costs.total_tokens += e.total_tokens;
+                window.add(host, &project, e);
+                days.entry(e.period.clone())
+                    .or_default()
+                    .add(host, &project, e);
+            }
+        }
+        costs.by_host.push((host.clone(), host_total));
+    }
+    by_cost_desc(&mut costs.by_host, |h| h.1);
+
+    // ccusage omits days with no usage, so its entries are not a calendar:
+    // shown as-is, the days on either side of a gap sit next to each other
+    // (Aug 22 directly before Aug 26, with Aug 23-25 simply absent). Rebuild
+    // the series with one row per calendar day from `first` to today.
+    let mut day = first;
+    while day <= today {
+        let k = key(day);
+        let cost = by_day.get(&k).copied().unwrap_or(0.0);
+        costs.daily.push((k, cost));
+        day += chrono::Duration::days(1);
+    }
+
+    let whole = window.finish();
+    costs.models = whole.models;
+    costs.projects = whole.projects;
+    costs.cache_read_tokens = whole.cache_read_tokens;
+    costs.days = days.into_iter().map(|(d, t)| (d, t.finish())).collect();
+    costs
+}
+
 /// Gather the last `days` of cost data across every host (see `hosts`).
 ///
-/// The daily series is one ccusage run per host, in parallel, summed here;
-/// sessions are a single run across all hosts, used only for projects. Summing
-/// per-host daily reports makes the per-host totals add up to the header by
-/// construction, which the session report did not: its per-host figures came
-/// out materially higher than the daily totals over the same window. A single
-/// run of either report takes on the order of a second per host, which is why
-/// they run in parallel rather than one after another.
+/// One ccusage run per host, in parallel: the daily report split by project
+/// (`--instances`), with models (`--breakdown`). That one report yields the
+/// daily series, the models and the projects, for the window and for each
+/// day, so they all add up to the header by construction. Projects used to
+/// come from the session report, whose figures came out materially higher
+/// than the daily totals over the same window. A run takes on the order of a
+/// second per host, which is why they run in parallel.
 pub fn gather(days: i64) -> Result<Costs, String> {
+    let today = chrono::Local::now().date_naive();
     // A `days`-day window includes today, so it starts `days - 1` days back;
     // starting `days` back would quietly make every "30d" figure cover 31.
-    let since = ymd(days - 1);
+    let first = today - chrono::Duration::days(days - 1);
+    let since = first.format("%Y%m%d").to_string();
     let hosts = hosts();
 
     // A host with no usage in the window still exits 0 with an empty list, so
     // a quiet machine does not fail the whole report.
-    let reports: Vec<Result<DailyReport, String>> = std::thread::scope(|s| {
+    let reports: Vec<Result<ProjectsReport, String>> = std::thread::scope(|s| {
         let workers: Vec<_> = hosts
             .iter()
             .map(|host| {
                 let since = since.as_str();
-                s.spawn(move || -> Result<DailyReport, String> {
+                s.spawn(move || -> Result<ProjectsReport, String> {
+                    // `claude daily`, not `daily`: in ccusage 20 the bare
+                    // report covers every agent CLI it finds (OpenCode, Codex,
+                    // ...) on this machine, whatever CLAUDE_CONFIG_DIR says, so
+                    // this machine's other agents would be added once per host.
                     let raw = ccusage(
-                        &["daily", "--json", "--breakdown", "--since", since],
-                        std::slice::from_ref(host),
+                        &[
+                            "claude",
+                            "daily",
+                            "--json",
+                            "--breakdown",
+                            "--instances",
+                            "--since",
+                            since,
+                        ],
+                        host,
                     )?;
                     serde_json::from_slice(&raw)
                         .map_err(|e| format!("daily JSON from {}: {e}", host.name))
@@ -315,110 +400,13 @@ pub fn gather(days: i64) -> Result<Costs, String> {
             })
             .collect()
     });
+    let reports = hosts
+        .iter()
+        .zip(reports)
+        .map(|(h, r)| r.map(|r| (h.name.clone(), r)))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let mut costs = Costs::default();
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let week_start = (chrono::Local::now() - chrono::Duration::days(6))
-        .format("%Y-%m-%d")
-        .to_string();
-
-    let mut models: HashMap<String, ModelBreakdown> = HashMap::new();
-    for (host, report) in hosts.iter().zip(reports) {
-        let report = report?;
-        let mut host_total = 0.0;
-        for e in &report.daily {
-            host_total += e.total_cost;
-            // Days repeat across hosts here; the calendar rebuild below sums them.
-            costs.daily.push((e.period.clone(), e.total_cost));
-            if e.period == today {
-                costs.today += e.total_cost;
-            }
-            if e.period.as_str() >= week_start.as_str() {
-                costs.week += e.total_cost;
-            }
-            // ccusage was asked for exactly the window, so every entry is in it.
-            costs.window += e.total_cost;
-            costs.cache_read_tokens += e.cache_read_tokens;
-            costs.total_tokens += e.total_tokens;
-            for m in &e.model_breakdowns {
-                let slot = models
-                    .entry(m.model_name.clone())
-                    .or_insert(ModelBreakdown {
-                        model_name: m.model_name.clone(),
-                        cost: 0.0,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cache_read_tokens: 0,
-                        cache_creation_tokens: 0,
-                    });
-                slot.cost += m.cost;
-                slot.input_tokens += m.input_tokens;
-                slot.output_tokens += m.output_tokens;
-                slot.cache_read_tokens += m.cache_read_tokens;
-                slot.cache_creation_tokens += m.cache_creation_tokens;
-            }
-        }
-        costs.by_host.push((host.name.clone(), host_total));
-    }
-    costs
-        .by_host
-        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    // ccusage omits days with no usage, so its entries are not a calendar:
-    // shown as-is, the days on either side of a gap sit next to each other
-    // (Aug 22 directly before Aug 26, with Aug 23-25 simply absent). Rebuild
-    // the series with one row per calendar day from `since` to today.
-    let mut by_day: HashMap<String, f64> = HashMap::new();
-    for (day, cost) in costs.daily.drain(..) {
-        *by_day.entry(day).or_insert(0.0) += cost;
-    }
-    let last = chrono::Local::now().date_naive();
-    let mut day = last - chrono::Duration::days(days - 1);
-    while day <= last {
-        let key = day.format("%Y-%m-%d").to_string();
-        let cost = by_day.get(&key).copied().unwrap_or(0.0);
-        costs.daily.push((key, cost));
-        day += chrono::Duration::days(1);
-    }
-    costs.models = models.into_values().collect();
-    costs.models.sort_by(|a, b| {
-        b.cost
-            .partial_cmp(&a.cost)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Projects are best-effort: a failure here should not cost us the rest of
-    // the dashboard, so a broken session report just leaves the pane empty.
-    // They come from the session report, so they need not add up to the daily
-    // totals; over the same window that report came out higher.
-    if let Ok(raw) = ccusage(&["session", "--json", "--since", &since], &hosts)
-        && let Ok(report) = serde_json::from_slice::<SessionReport>(&raw)
-    {
-        let map = session_projects(&hosts);
-        let mut by_project: HashMap<String, (f64, BTreeSet<String>)> = HashMap::new();
-        for e in report.session {
-            let (name, host) = map
-                .get(&e.period)
-                .cloned()
-                .unwrap_or_else(|| ("?".into(), "?".into()));
-            let slot = by_project.entry(name).or_insert((0.0, BTreeSet::new()));
-            slot.0 += e.total_cost;
-            slot.1.insert(host);
-        }
-        let mut projects: Vec<Project> = by_project
-            .into_iter()
-            .map(|(name, (cost, hosts))| Project {
-                name,
-                cost,
-                hosts: hosts.into_iter().collect(),
-            })
-            .collect();
-        projects.sort_by(|a, b| {
-            b.cost
-                .partial_cmp(&a.cost)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        costs.projects = projects;
-    }
+    let mut costs = assemble(&reports, first, today);
     costs.hosts = hosts;
     Ok(costs)
 }
@@ -558,6 +546,139 @@ mod tests {
         let back: CostSnapshot = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.date, "2026-09-15");
         assert_eq!(back.costs.today, 12.34);
+    }
+
+    fn entry(date: &str, cost: f64, model: &str) -> Entry {
+        Entry {
+            period: date.into(),
+            total_cost: cost,
+            total_tokens: 100,
+            cache_read_tokens: 10,
+            model_breakdowns: vec![ModelBreakdown {
+                model_name: model.into(),
+                cost,
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn report(projects: &[(&str, Vec<Entry>)]) -> ProjectsReport {
+        ProjectsReport {
+            projects: projects
+                .iter()
+                .map(|(dir, es)| (dir.to_string(), es.clone()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn project_labels_keep_the_last_two_path_segments() {
+        assert_eq!(project_label("-home-me-code-project"), "code/project");
+        assert_eq!(project_label("-Users-me-code-project"), "code/project");
+        assert_eq!(project_label("-home-me"), "home/me");
+    }
+
+    #[test]
+    fn days_hold_their_own_models_and_projects_and_add_up() {
+        let reports = vec![
+            (
+                "desk".to_string(),
+                report(&[
+                    (
+                        "-home-me-code-alpha",
+                        vec![
+                            entry("2026-09-14", 1.0, "claude-opus-5"),
+                            entry("2026-09-15", 2.0, "claude-opus-5-5"),
+                        ],
+                    ),
+                    (
+                        "-home-me-code-beta",
+                        vec![entry("2026-09-15", 4.0, "claude-sonnet-5-5")],
+                    ),
+                ]),
+            ),
+            (
+                "laptop".to_string(),
+                // The same checkout under another home path merges with desk's.
+                report(&[(
+                    "-Users-me-code-alpha",
+                    vec![entry("2026-09-15", 8.0, "claude-opus-5-5")],
+                )]),
+            ),
+        ];
+        let c = assemble(&reports, day("2026-09-12"), day("2026-09-15"));
+
+        assert_eq!(c.today, 14.0);
+        assert_eq!(c.window, 15.0);
+        assert_eq!(
+            c.daily,
+            vec![
+                ("2026-09-12".to_string(), 0.0),
+                ("2026-09-13".to_string(), 0.0),
+                ("2026-09-14".to_string(), 1.0),
+                ("2026-09-15".to_string(), 14.0),
+            ]
+        );
+        assert_eq!(
+            c.by_host,
+            vec![("laptop".to_string(), 8.0), ("desk".to_string(), 7.0)]
+        );
+
+        // Days with no usage have no entry; the dashboard shows them as empty.
+        assert_eq!(
+            c.days.keys().collect::<Vec<_>>(),
+            ["2026-09-14", "2026-09-15"]
+        );
+
+        let monday = &c.days["2026-09-14"];
+        assert_eq!(monday.models.len(), 1);
+        assert_eq!(monday.models[0].model_name, "claude-opus-5");
+        assert_eq!(monday.projects.len(), 1);
+        assert_eq!(monday.projects[0].name, "code/alpha");
+        assert_eq!(monday.projects[0].hosts, ["desk"]);
+
+        let tuesday = &c.days["2026-09-15"];
+        let projects: Vec<(&str, f64, Vec<String>)> = tuesday
+            .projects
+            .iter()
+            .map(|p| (p.name.as_str(), p.cost, p.hosts.clone()))
+            .collect();
+        assert_eq!(
+            projects,
+            vec![
+                (
+                    "code/alpha",
+                    10.0,
+                    vec!["desk".to_string(), "laptop".to_string()]
+                ),
+                ("code/beta", 4.0, vec!["desk".to_string()]),
+            ]
+        );
+        let models: Vec<(&str, f64)> = tuesday
+            .models
+            .iter()
+            .map(|m| (m.model_name.as_str(), m.cost))
+            .collect();
+        assert_eq!(
+            models,
+            vec![("claude-opus-5-5", 10.0), ("claude-sonnet-5-5", 4.0)]
+        );
+        assert_eq!(tuesday.cache_read_tokens, 30);
+
+        // The window still sums every day.
+        assert_eq!(c.projects[0].name, "code/alpha");
+        assert_eq!(c.projects[0].cost, 11.0);
+        assert_eq!(c.models.iter().map(|m| m.cost).sum::<f64>(), 15.0);
+        assert_eq!(c.cache_read_tokens, 40);
+    }
+
+    #[test]
+    fn the_instances_report_parses_as_ccusage_writes_it() {
+        let raw = r#"{"projects":{"-home-me-code-alpha":[{"date":"2026-09-15","totalCost":1.5,"totalTokens":9,"cacheReadTokens":3,"project":"-home-me-code-alpha","modelBreakdowns":[{"modelName":"claude-opus-5-5","cost":1.5,"inputTokens":1,"outputTokens":2,"cacheReadTokens":3,"cacheCreationTokens":3}]}]},"totals":{}}"#;
+        let r: ProjectsReport = serde_json::from_str(raw).unwrap();
+        let e = &r.projects["-home-me-code-alpha"][0];
+        assert_eq!(e.period, "2026-09-15");
+        assert_eq!(e.model_breakdowns[0].cost, 1.5);
     }
 
     #[test]
