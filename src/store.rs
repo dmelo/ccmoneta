@@ -3,10 +3,14 @@
 //! Layout under `$XDG_CACHE_HOME/ccmoneta/` (default `~/.cache/ccmoneta/`):
 //!
 //!   limits.json          the latest limit windows, from the hook or the endpoint
+//!   limits/<account>.json  the same per Claude account, when aimux runs several
 //!   cost.json            the full cost data set, with when and for which day
 //!   health.json          Claude's service status and the installed Claude Code version
 //!   hosts/<name>/        another machine's mirrored transcripts, with its
-//!                        last-sync, last-attempt and last-error
+//!                        last-sync, last-attempt and last-error, and markers.tsv,
+//!                        which of its accounts ran each session
+//!   views/<host>/<account>/  that account's part of a host's transcripts, hard
+//!                        links or split copies, rebuilt by each cost run
 //!   jobs/<job>.json      a job's attempts, failures and backoff; written by that job
 //!   jobs/<job>.spawned   when a surface last started that job; written by surfaces
 //!   locks/<job>.lock     held while a job runs, so each job runs once at a time

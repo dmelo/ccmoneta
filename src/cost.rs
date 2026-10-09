@@ -9,9 +9,10 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::accounts::{self, Owners};
 use crate::config::Config;
 use crate::store::{self, JobState};
 
@@ -77,6 +78,9 @@ pub struct Costs {
     /// Models and projects for each day that had usage, keyed "YYYY-MM-DD".
     /// The dashboard shows one when a day is selected.
     pub days: BTreeMap<String, Day>,
+    /// Per Claude account over the window, descending by cost, named as on
+    /// this machine (see accounts.rs). One unnamed entry without aimux.
+    pub by_account: Vec<(String, f64)>,
 }
 
 /// Models and projects for one day, or summed over the whole window.
@@ -88,6 +92,8 @@ pub struct Day {
     /// Per project, descending by cost.
     pub projects: Vec<Project>,
     pub cache_read_tokens: u64,
+    /// Per Claude account, descending by cost.
+    pub by_account: Vec<(String, f64)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,14 +182,14 @@ pub fn ccusage_exe() -> std::ffi::OsString {
         .unwrap_or_else(|| "ccusage".into())
 }
 
-fn ccusage(args: &[&str], host: &Host) -> Result<Vec<u8>, String> {
-    // One host per run. ccusage silently skips a CLAUDE_CONFIG_DIR that does
-    // not exist, so a host with no data on disk would still be listed as
-    // counted while contributing nothing; hosts() returns only directories
-    // that actually contain projects/ to rule that out.
+fn ccusage(args: &[&str], config_dir: &Path) -> Result<Vec<u8>, String> {
+    // One config directory per run. ccusage silently skips a CLAUDE_CONFIG_DIR
+    // that does not exist, so a host with no data on disk would still be
+    // listed as counted while contributing nothing; hosts() returns only
+    // directories that actually contain projects/ to rule that out.
     let out = Command::new(ccusage_exe())
         .args(args)
-        .env("CLAUDE_CONFIG_DIR", &host.config_dir)
+        .env("CLAUDE_CONFIG_DIR", config_dir)
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -229,11 +235,14 @@ fn project_label(dir: &str) -> String {
         .join("/")
 }
 
-fn by_cost_desc<T>(items: &mut [T], cost: impl Fn(&T) -> f64) {
+/// Most expensive first; equal costs by name, since the sums come out of hash
+/// maps and would otherwise swap places from one refresh to the next.
+fn by_cost_desc<T>(items: &mut [T], cost: impl Fn(&T) -> f64, name: impl Fn(&T) -> &str) {
     items.sort_by(|a, b| {
         cost(b)
             .partial_cmp(&cost(a))
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| name(a).cmp(name(b)))
     });
 }
 
@@ -244,10 +253,12 @@ struct Tally {
     /// Project label -> (cost, hosts it ran on).
     projects: HashMap<String, (f64, BTreeSet<String>)>,
     cache_read_tokens: u64,
+    accounts: HashMap<String, f64>,
 }
 
 impl Tally {
-    fn add(&mut self, host: &str, project: &str, e: &Entry) {
+    fn add(&mut self, host: &str, account: &str, project: &str, e: &Entry) {
+        *self.accounts.entry(account.to_string()).or_default() += e.total_cost;
         for m in &e.model_breakdowns {
             let slot = self
                 .models
@@ -270,7 +281,7 @@ impl Tally {
 
     fn finish(self) -> Day {
         let mut models: Vec<ModelBreakdown> = self.models.into_values().collect();
-        by_cost_desc(&mut models, |m| m.cost);
+        by_cost_desc(&mut models, |m| m.cost, |m| &m.model_name);
         let mut projects: Vec<Project> = self
             .projects
             .into_iter()
@@ -280,18 +291,29 @@ impl Tally {
                 hosts: hosts.into_iter().collect(),
             })
             .collect();
-        by_cost_desc(&mut projects, |p| p.cost);
+        by_cost_desc(&mut projects, |p| p.cost, |p| &p.name);
+        let mut by_account: Vec<(String, f64)> = self.accounts.into_iter().collect();
+        by_cost_desc(&mut by_account, |a| a.1, |a| &a.0);
         Day {
             models,
             projects,
             cache_read_tokens: self.cache_read_tokens,
+            by_account,
         }
     }
 }
 
-/// Fold each host's report into the dashboard's figures. The window runs from
+/// One ccusage report: a host's transcripts, or the part one account ran.
+struct Run {
+    host: String,
+    /// The account's name as shown.
+    account: String,
+    report: ProjectsReport,
+}
+
+/// Fold every run's report into the dashboard's figures. The window runs from
 /// `first` to `today`, both included.
-fn assemble(reports: &[(String, ProjectsReport)], first: NaiveDate, today: NaiveDate) -> Costs {
+fn assemble(runs: &[Run], first: NaiveDate, today: NaiveDate) -> Costs {
     let key = |d: NaiveDate| d.format("%Y-%m-%d").to_string();
     let today_key = key(today);
     let week_start = key(today - chrono::Duration::days(6));
@@ -300,12 +322,18 @@ fn assemble(reports: &[(String, ProjectsReport)], first: NaiveDate, today: Naive
     let mut window = Tally::default();
     let mut days: BTreeMap<String, Tally> = BTreeMap::new();
     let mut by_day: HashMap<String, f64> = HashMap::new();
-    for (host, report) in reports {
-        let mut host_total = 0.0;
+    let mut by_host: HashMap<String, f64> = HashMap::new();
+    for Run {
+        host,
+        account,
+        report,
+    } in runs
+    {
+        let host_total = by_host.entry(host.clone()).or_default();
         for (dir, entries) in &report.projects {
             let project = project_label(dir);
             for e in entries {
-                host_total += e.total_cost;
+                *host_total += e.total_cost;
                 *by_day.entry(e.period.clone()).or_default() += e.total_cost;
                 if e.period == today_key {
                     costs.today += e.total_cost;
@@ -316,15 +344,15 @@ fn assemble(reports: &[(String, ProjectsReport)], first: NaiveDate, today: Naive
                 // ccusage was asked for exactly the window, so every entry is in it.
                 costs.window += e.total_cost;
                 costs.total_tokens += e.total_tokens;
-                window.add(host, &project, e);
+                window.add(host, account, &project, e);
                 days.entry(e.period.clone())
                     .or_default()
-                    .add(host, &project, e);
+                    .add(host, account, &project, e);
             }
         }
-        costs.by_host.push((host.clone(), host_total));
     }
-    by_cost_desc(&mut costs.by_host, |h| h.1);
+    costs.by_host = by_host.into_iter().collect();
+    by_cost_desc(&mut costs.by_host, |h| h.1, |h| &h.0);
 
     // ccusage omits days with no usage, so its entries are not a calendar:
     // shown as-is, the days on either side of a gap sit next to each other
@@ -342,6 +370,7 @@ fn assemble(reports: &[(String, ProjectsReport)], first: NaiveDate, today: Naive
     costs.models = whole.models;
     costs.projects = whole.projects;
     costs.cache_read_tokens = whole.cache_read_tokens;
+    costs.by_account = whole.by_account;
     costs.days = days.into_iter().map(|(d, t)| (d, t.finish())).collect();
     costs
 }
@@ -362,13 +391,18 @@ pub fn gather(days: i64) -> Result<Costs, String> {
     let first = today - chrono::Duration::days(days - 1);
     let since = first.format("%Y%m%d").to_string();
     let hosts = hosts();
+    let window_start = first
+        .and_hms_opt(0, 0, 0)
+        .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+        .map_or(0, |t| t.timestamp());
+    let (sources, names) = sources(&hosts, window_start)?;
 
-    // A host with no usage in the window still exits 0 with an empty list, so
-    // a quiet machine does not fail the whole report.
+    // A source with no usage in the window still exits 0 with an empty list,
+    // so a quiet machine or account does not fail the whole report.
     let reports: Vec<Result<ProjectsReport, String>> = std::thread::scope(|s| {
-        let workers: Vec<_> = hosts
+        let workers: Vec<_> = sources
             .iter()
-            .map(|host| {
+            .map(|src| {
                 let since = since.as_str();
                 s.spawn(move || -> Result<ProjectsReport, String> {
                     // `claude daily`, not `daily`: in ccusage 20 the bare
@@ -385,10 +419,10 @@ pub fn gather(days: i64) -> Result<Costs, String> {
                             "--since",
                             since,
                         ],
-                        host,
+                        &src.config_dir,
                     )?;
                     serde_json::from_slice(&raw)
-                        .map_err(|e| format!("daily JSON from {}: {e}", host.name))
+                        .map_err(|e| format!("daily JSON from {}: {e}", src.host))
                 })
             })
             .collect();
@@ -400,15 +434,240 @@ pub fn gather(days: i64) -> Result<Costs, String> {
             })
             .collect()
     });
-    let reports = hosts
-        .iter()
+    let runs = sources
+        .into_iter()
         .zip(reports)
-        .map(|(h, r)| r.map(|r| (h.name.clone(), r)))
+        .map(|(src, r)| {
+            r.map(|report| Run {
+                account: names.get(&src.account).cloned().unwrap_or(src.account),
+                host: src.host,
+                report,
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut costs = assemble(&reports, first, today);
+    let mut costs = assemble(&runs, first, today);
     costs.hosts = hosts;
     Ok(costs)
+}
+
+/// Where one ccusage run reads: a host's own config directory, or the view of
+/// it that holds one account's transcripts.
+struct Source {
+    host: String,
+    /// The account key (see accounts::Account::key).
+    account: String,
+    config_dir: PathBuf,
+}
+
+/// What to run ccusage on, and each account's name by key.
+///
+/// A host whose sessions all belong to one account is read in place, as before
+/// accounts existed. A host where several accounts ran sessions is split into
+/// one view per account (see `split`). Names are this machine's profile names;
+/// an account only another machine has is named as that machine names it.
+fn sources(
+    hosts: &[Host],
+    window_start: i64,
+) -> Result<(Vec<Source>, HashMap<String, String>), String> {
+    let local = accounts::local();
+    let mut names: HashMap<String, String> =
+        local.iter().map(|a| (a.key(), a.name.clone())).collect();
+    let local_default = local
+        .iter()
+        .find(|a| a.source)
+        .map(accounts::Account::key)
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for host in hosts {
+        let owners = if host.remote {
+            match std::fs::read_to_string(crate::sync::markers_path(&host.name)) {
+                Ok(text) => {
+                    let (remote, owners) = accounts::parse_remote_markers(&text);
+                    for r in remote {
+                        let name = names.entry(r.key).or_default();
+                        if name.is_empty() {
+                            *name = r.name;
+                        }
+                    }
+                    owners
+                }
+                // Not synced since accounts existed: all of it is the source
+                // account's, which is how it was counted before.
+                Err(_) => Owners::new(local_default.clone()),
+            }
+        } else {
+            accounts::local_owners(&local)
+        };
+        if owners.accounts().len() <= 1 {
+            out.push(Source {
+                host: host.name.clone(),
+                account: owners.default.clone(),
+                config_dir: host.config_dir.clone(),
+            });
+        } else {
+            out.extend(split(host, &owners, window_start)?);
+        }
+    }
+    // A profile isolated with `aimux migrate isolate` keeps its transcripts in
+    // a projects/ of its own instead of the shared one, so nothing above reads
+    // them; every turn there is that account's.
+    let local_host = hosts.iter().find(|h| !h.remote).map(|h| h.name.clone());
+    for a in local.iter().filter(|a| !a.source) {
+        let dir = a.config_dir.join("projects");
+        let own = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir());
+        if let (true, Some(host)) = (own, &local_host) {
+            out.push(Source {
+                host: host.clone(),
+                account: a.key(),
+                config_dir: a.config_dir.clone(),
+            });
+        }
+    }
+    Ok((out, names))
+}
+
+/// A file name for an account key.
+fn key_dir(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Split a host's transcripts into one view per account, under
+/// `<cache>/views/<host>/<account>/projects/`, rebuilt on every run.
+///
+/// A session only the default account ran is hard-linked whole into that
+/// account's view; ccusage ignores symlinks, and a hard link costs nothing on
+/// the same filesystem (it is copied otherwise). A session another account had
+/// a hand in is split line by line, each line going to the account that ran it
+/// at its timestamp (see accounts::Owners). Transcripts last written before the
+/// window cannot hold any of its usage, so they are left out.
+fn split(host: &Host, owners: &Owners, window_start: i64) -> Result<Vec<Source>, String> {
+    let root = store::cache_dir().join("views").join(&host.name);
+    let _ = std::fs::remove_dir_all(&root);
+    let keys = owners.accounts();
+    let view = |key: &str| root.join(key_dir(key));
+    for k in &keys {
+        let dir = view(k).join("projects");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    }
+    let projects = host.config_dir.join("projects");
+    for file in transcripts(&projects) {
+        let fresh = std::fs::metadata(&file)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_some_and(|d| d.as_secs() as i64 >= window_start);
+        let Ok(rel) = file.strip_prefix(&projects) else {
+            continue;
+        };
+        // <project>/<session>.jsonl, or <project>/<session>/subagents/...
+        let Some(session) = rel.components().nth(1).map(|c| {
+            c.as_os_str()
+                .to_string_lossy()
+                .trim_end_matches(".jsonl")
+                .to_string()
+        }) else {
+            continue;
+        };
+        if !fresh {
+            continue;
+        }
+        if owners.only_default(&session) {
+            link_or_copy(&file, &view(&owners.default).join("projects").join(rel))?;
+        } else {
+            split_file(&file, rel, &session, owners, &view)?;
+        }
+    }
+    Ok(keys
+        .into_iter()
+        .map(|k| Source {
+            host: host.name.clone(),
+            config_dir: view(&k),
+            account: k,
+        })
+        .collect())
+}
+
+/// Every `*.jsonl` under `root`, at any depth, not following symlinks.
+fn transcripts(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let Ok(kind) = e.file_type() else {
+                continue;
+            };
+            let path = e.path();
+            if kind.is_dir() {
+                stack.push(path);
+            } else if kind.is_file() && path.extension().is_some_and(|x| x == "jsonl") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn link_or_copy(from: &Path, to: &Path) -> Result<(), String> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    }
+    std::fs::hard_link(from, to)
+        .or_else(|_| std::fs::copy(from, to).map(|_| ()))
+        .map_err(|e| format!("linking {} into a view: {e}", from.display()))
+}
+
+/// Write each account's lines of one transcript into its view. A line with no
+/// timestamp goes with the line before it.
+fn split_file(
+    file: &Path,
+    rel: &Path,
+    session: &str,
+    owners: &Owners,
+    view: &dyn Fn(&str) -> PathBuf,
+) -> Result<(), String> {
+    #[derive(Deserialize)]
+    struct Stamp {
+        timestamp: Option<String>,
+    }
+    let text =
+        std::fs::read_to_string(file).map_err(|e| format!("reading {}: {e}", file.display()))?;
+    let mut parts: HashMap<String, String> = HashMap::new();
+    let mut owner = owners.default.clone();
+    for line in text.lines() {
+        let at = serde_json::from_str::<Stamp>(line)
+            .ok()
+            .and_then(|s| s.timestamp)
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+            .map(|t| t.timestamp());
+        if let Some(at) = at {
+            owner = owners.at(session, at).to_string();
+        }
+        let part = parts.entry(owner.clone()).or_default();
+        part.push_str(line);
+        part.push('\n');
+    }
+    for (account, body) in parts {
+        let to = view(&account).join("projects").join(rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&to, body).map_err(|e| format!("writing {}: {e}", to.display()))?;
+    }
+    Ok(())
 }
 
 pub fn cache_path() -> PathBuf {
@@ -606,7 +865,15 @@ mod tests {
                 )]),
             ),
         ];
-        let c = assemble(&reports, day("2026-09-12"), day("2026-09-15"));
+        let runs: Vec<Run> = reports
+            .into_iter()
+            .map(|(host, report)| Run {
+                host,
+                account: String::new(),
+                report,
+            })
+            .collect();
+        let c = assemble(&runs, day("2026-09-12"), day("2026-09-15"));
 
         assert_eq!(c.today, 14.0);
         assert_eq!(c.window, 15.0);
@@ -670,6 +937,86 @@ mod tests {
         assert_eq!(c.projects[0].cost, 11.0);
         assert_eq!(c.models.iter().map(|m| m.cost).sum::<f64>(), 15.0);
         assert_eq!(c.cache_read_tokens, 40);
+    }
+
+    #[test]
+    fn accounts_add_up_per_day_and_over_the_window() {
+        let run = |host: &str, account: &str, entries: Vec<Entry>| Run {
+            host: host.into(),
+            account: account.into(),
+            report: report(&[("-home-me-code-alpha", entries)]),
+        };
+        let runs = vec![
+            run(
+                "desk",
+                "main",
+                vec![
+                    entry("2026-09-14", 1.0, "claude-opus-5-5"),
+                    entry("2026-09-15", 2.0, "claude-opus-5-5"),
+                ],
+            ),
+            run(
+                "desk",
+                "second",
+                vec![entry("2026-09-15", 4.0, "claude-opus-5-5")],
+            ),
+            run(
+                "laptop",
+                "second",
+                vec![entry("2026-09-15", 8.0, "claude-opus-5-5")],
+            ),
+        ];
+        let c = assemble(&runs, day("2026-09-14"), day("2026-09-15"));
+        assert_eq!(
+            c.by_account,
+            vec![("second".to_string(), 12.0), ("main".to_string(), 3.0)]
+        );
+        // A host's total counts every account that ran there.
+        assert_eq!(
+            c.by_host,
+            vec![("laptop".to_string(), 8.0), ("desk".to_string(), 7.0)]
+        );
+        assert_eq!(
+            c.days["2026-09-14"].by_account,
+            vec![("main".to_string(), 1.0)]
+        );
+        assert_eq!(
+            c.days["2026-09-15"].by_account,
+            vec![("second".to_string(), 12.0), ("main".to_string(), 2.0)]
+        );
+        assert_eq!(c.today, 14.0);
+    }
+
+    #[test]
+    fn a_split_session_sends_each_line_to_the_account_that_ran_it() {
+        let dir = std::env::temp_dir().join(format!("ccmoneta-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("in.jsonl");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Epoch 1_800_000_000 is 2027-01-15T08:00:00Z.
+        std::fs::write(
+            &file,
+            "{\"timestamp\":\"2027-01-15T07:59:00Z\",\"n\":1}\n\
+             {\"n\":2}\n\
+             {\"timestamp\":\"2027-01-15T08:01:00Z\",\"n\":3}\n",
+        )
+        .unwrap();
+        let mut owners = Owners::new("main".into());
+        owners.add("s1", 1_800_000_000, "second");
+        let view = |k: &str| dir.join(k);
+        split_file(&file, Path::new("p/s1.jsonl"), "s1", &owners, &view).unwrap();
+        let read =
+            |k: &str| std::fs::read_to_string(dir.join(k).join("projects/p/s1.jsonl")).unwrap();
+        assert_eq!(
+            read("main"),
+            "{\"timestamp\":\"2027-01-15T07:59:00Z\",\"n\":1}\n{\"n\":2}\n",
+            "a line with no timestamp stays with the one before"
+        );
+        assert_eq!(
+            read("second"),
+            "{\"timestamp\":\"2027-01-15T08:01:00Z\",\"n\":3}\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

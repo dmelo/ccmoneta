@@ -34,10 +34,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
+use crate::accounts;
 use crate::config::Config;
 use crate::cost::{self, CostSnapshot, Costs, Host, ModelBreakdown, Project};
 use crate::health::{self, HealthSnapshot};
-use crate::limits::{self, Snapshot, Window};
+use crate::limits::{self, AccountLimits, Snapshot, Window};
 use crate::refresh;
 use crate::store::{self, Job, JobState, ago};
 
@@ -46,7 +47,8 @@ const REREAD: Duration = Duration::from_secs(2);
 
 struct App {
     cfg: Config,
-    limits: Option<Snapshot>,
+    /// Every account's limits; one, unnamed, without aimux.
+    limits: Vec<AccountLimits>,
     limits_state: JobState,
     cost: Option<CostSnapshot>,
     cost_state: JobState,
@@ -70,13 +72,15 @@ struct App {
     day_rows: RefCell<Vec<(u16, usize)>>,
     /// The spend pane, so a click elsewhere on a matching row is not a day.
     spend_area: Cell<Rect>,
+    /// The limits pane's inner width, for sizing its bars. Set by the draw pass.
+    limits_width: Cell<u16>,
 }
 
 impl App {
     fn new(cfg: Config) -> Self {
         let mut app = App {
             cfg,
-            limits: None,
+            limits: Vec::new(),
             limits_state: JobState::default(),
             cost: None,
             cost_state: JobState::default(),
@@ -89,6 +93,7 @@ impl App {
             scroll: Cell::new(0),
             day_rows: RefCell::new(Vec::new()),
             spend_area: Cell::new(Rect::default()),
+            limits_width: Cell::new(0),
         };
         app.reload();
         app
@@ -97,14 +102,14 @@ impl App {
     /// Re-read the cache, and start whatever refresh is due. Stale figures are
     /// shown at once with their age rather than hidden until a refresh lands.
     fn reload(&mut self) {
-        self.limits = limits::load();
+        self.limits = limits::load_all(&accounts::local());
         self.limits_state = store::job_state(Job::Limits);
         self.cost = cost::load();
         self.cost_state = store::job_state(Job::Cost);
         self.hosts = cost::hosts();
         self.health = self.cfg.health.any().then(health::load).flatten();
         self.refreshing = store::is_running(Job::Cost);
-        refresh::limits_if_due(&self.cfg, self.limits.as_ref());
+        refresh::limits_if_due(&self.cfg, &self.limits);
         refresh::cost_if_stale(&self.cfg, self.cost.as_ref());
         refresh::sync_if_due(&self.cfg);
         refresh::health_if_due(&self.cfg, self.health.as_ref());
@@ -189,6 +194,7 @@ impl App {
                 models: &c.models,
                 projects: &c.projects,
                 cache_read_tokens: c.cache_read_tokens,
+                by_account: &c.by_account,
             },
             // A day with no usage has no entry; it shows as empty.
             Some(day) => {
@@ -198,6 +204,7 @@ impl App {
                     models: d.map_or(&[], |d| &d.models),
                     projects: d.map_or(&[], |d| &d.projects),
                     cache_read_tokens: d.map_or(0, |d| d.cache_read_tokens),
+                    by_account: d.map_or(&[], |d| &d.by_account),
                 }
             }
         })
@@ -210,6 +217,8 @@ struct View<'a> {
     models: &'a [ModelBreakdown],
     projects: &'a [Project],
     cache_read_tokens: u64,
+    /// Spend per Claude account; shown only when there are several.
+    by_account: &'a [(String, f64)],
 }
 
 impl View<'_> {
@@ -252,28 +261,69 @@ fn bar(ratio: f64, width: usize) -> String {
     s
 }
 
-fn draw_limits(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::bordered().title(" limits ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+/// The limits pane's lines. One account shows its windows and where they came
+/// from; several show each under its name.
+fn limit_rows(app: &App) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let several = app.limits.len() > 1;
+    let mut lines = Vec::new();
+    for a in &app.limits {
+        let name = &a.account.name;
+        match &a.snap {
+            Some(snap) => {
+                let now = store::now();
+                let age = snap.age(now);
+                let staleness = if age > app.cfg.limits.max_age_seconds {
+                    format!("{} ago", ago(age))
+                } else {
+                    "live".into()
+                };
+                let source = format!("via {} · {}", snap.source, staleness);
+                if several {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{name}  "),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(source.clone(), dim),
+                    ]));
+                }
+                lines.extend(window_rows(snap, app.limits_width.get(), now));
+                if !several {
+                    lines.push(Line::styled(source, dim));
+                }
+            }
+            None => {
+                let why = match &app.limits_state.last_error {
+                    Some(e) => format!("no data yet: {e}"),
+                    None => "no data yet: fetching, or run Claude Code once".into(),
+                };
+                if several {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{name}  "),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("no data yet", dim),
+                    ]));
+                } else {
+                    lines.push(Line::styled(why, dim));
+                }
+            }
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::styled("no data yet", dim));
+    }
+    lines
+}
 
-    let Some(snap) = &app.limits else {
-        let text = match &app.limits_state.last_error {
-            Some(e) => format!("no data yet: {e}"),
-            None => "no data yet: fetching, or run Claude Code once".into(),
-        };
-        frame.render_widget(
-            Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
-            inner,
-        );
-        return;
-    };
-
+/// One row per window an account reports.
+fn window_rows(snap: &Snapshot, width: u16, now: i64) -> Vec<Line<'static>> {
     // Our own bar rather than ratatui's Gauge: Gauge centres its label over the
     // fill, so the percentage ends up half-covered by the bar it describes.
-    let bar_w = (inner.width as usize).saturating_sub(28).clamp(8, 24);
-    let now = store::now();
-    let row = |label: &str, w: Window| -> Line {
+    let bar_w = (width as usize).saturating_sub(28).clamp(8, 24);
+    let row = |label: &str, w: Window| -> Line<'static> {
         let reset = w
             .resets_in(now)
             .map(|r| format!("  resets {}", ago(r)))
@@ -293,7 +343,6 @@ fn draw_limits(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(reset, Style::default().fg(Color::Gray)),
         ])
     };
-
     let mut lines = Vec::new();
     if let Some(w) = snap.limits.five_hour {
         lines.push(row("5h", w));
@@ -306,17 +355,14 @@ fn draw_limits(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(w) = snap.limits.seven_day_opus {
         lines.push(row("opus", w));
     }
-    let age = snap.age(now);
-    let staleness = if age > app.cfg.limits.max_age_seconds {
-        format!("{} ago", ago(age))
-    } else {
-        "live".into()
-    };
-    lines.push(Line::styled(
-        format!("via {} · {}", snap.source, staleness),
-        Style::default().fg(Color::DarkGray),
-    ));
-    frame.render_widget(Paragraph::new(lines), inner);
+    lines
+}
+
+fn draw_limits(frame: &mut Frame, area: Rect, rows: Vec<Line>) {
+    let block = Block::bordered().title(" limits ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(rows), inner);
 }
 
 /// Scale ceiling for the day bars: roughly the 90th percentile of days with
@@ -337,6 +383,32 @@ fn scale_cap(daily: &[(String, f64)]) -> f64 {
 /// not push it off a narrow pane, how old each mirrored host's copy is. A
 /// remote host's figures are only as current as its last `ccmoneta-sync`, so an
 /// old or missing sync is called out instead of silently under-counting.
+/// Spend per Claude account, when aimux runs several: over the window, or for
+/// the pinned day, labelled to match the panes below.
+fn account_line(app: &App, c: &Costs) -> Option<Line<'static>> {
+    if c.by_account.len() < 2 {
+        return None;
+    }
+    let dim = Style::default().fg(Color::DarkGray);
+    let view = app.view()?;
+    let label = match view.day {
+        Some(d) => d.format("%b %d").to_string(),
+        None => format!("{}d", app.days()),
+    };
+    // Two spaces after the label, as the per-host line has after "30d".
+    let mut spans = vec![Span::styled(format!("{label}  "), dim)];
+    if view.by_account.is_empty() {
+        spans.push(Span::styled("no usage", dim));
+    }
+    for (i, (name, cost)) in view.by_account.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", dim));
+        }
+        spans.push(Span::raw(format!("{name} ${cost:.2}")));
+    }
+    Some(Line::from(spans))
+}
+
 fn host_lines(c: &Costs, hosts: &[Host], days: i64) -> Vec<Line<'static>> {
     let dim = Style::default().fg(Color::DarkGray);
     let warn = Style::default().fg(Color::Yellow);
@@ -406,6 +478,9 @@ fn draw_spend(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!("${:.2}", c.window), bold),
     ])];
     lines.extend(host_lines(c, &app.hosts, app.days()));
+    if let Some(line) = account_line(app, c) {
+        lines.push(line);
+    }
     lines.push(Line::from(""));
 
     // Newest first: today is what you open this to see.
@@ -621,17 +696,9 @@ fn draw(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(outer[0]);
 
-    let limit_lines = app.limits.as_ref().map_or(1, |s| {
-        [
-            s.limits.five_hour,
-            s.limits.seven_day,
-            s.limits.seven_day_opus,
-        ]
-        .iter()
-        .filter(|w| w.is_some())
-        .count()
-            + 1
-    });
+    // The bars inside are sized from the pane's width, known only here.
+    app.limits_width.set(cols[1].width.saturating_sub(2));
+    let limits = limit_rows(app);
     let models = model_rows(app);
     let health = if app.cfg.health.any() {
         health_rows(app)
@@ -642,7 +709,7 @@ fn draw(frame: &mut Frame, app: &App) {
     // index, so the health pane being absent cannot shift anything out from
     // under the panes below it. Projects takes whatever is left: it is the
     // longest list and the least consulted.
-    let mut constraints = vec![Constraint::Length(limit_lines as u16 + 2)];
+    let mut constraints = vec![Constraint::Length(limits.len() as u16 + 2)];
     let mut add = |c: Constraint| {
         constraints.push(c);
         constraints.len() - 1
@@ -656,7 +723,7 @@ fn draw(frame: &mut Frame, app: &App) {
         .split(cols[1]);
 
     draw_spend(frame, cols[0], app);
-    draw_limits(frame, right[0], app);
+    draw_limits(frame, right[0], limits);
     if let Some(at) = health_at {
         draw_health(frame, right[at], health);
     }

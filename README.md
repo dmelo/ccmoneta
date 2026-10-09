@@ -103,6 +103,16 @@ List the other machines under `[[sync.hosts]]`. Each must be reachable with `ssh
 
   The service runs `%h/.local/bin/ccmoneta`. `cargo install` puts ccmoneta in `~/.cargo/bin` instead, so change `ExecStart` to wherever yours is.
 
+## Several Claude accounts (aimux)
+
+If you run more than one Claude subscription with [aimux](https://github.com/Digital-Threads/aimux), ccmoneta finds its profiles in `~/.aimux/config.yaml` and keeps limits and spend per account. Nothing needs configuring.
+
+- **Limits** for every account come from `aimux status --json`, which holds each profile's login. The bar shows them all (`main 5h 12% · 7d 34% │ work 5h 56% · 7d 78%`), the dashboard has a block per account, and the status line shows the account that Claude Code is running under, saving its figures to that account alone.
+- **Spend** is split by the account that ran each turn. Transcripts are shared between aimux profiles, so ccmoneta uses aimux's own rule: Claude Code leaves a `session-env/<session>` marker in the config directory of whichever profile opens a session, and a turn belongs to the account whose marker for that session is the newest one not after the turn. Turns no marker names, which includes everything from before aimux, go to the source profile (`~/.claude`). A session that goes from one account to another and back stays with the second, since each profile keeps only one marker per session. A profile isolated with `aimux migrate isolate` keeps its own transcripts, and all of them count for its account. The dashboard shows each account's spend for the window or for the picked day, and the bar's tooltip shows today and the window.
+- **Accounts are matched across machines** by the account each profile is logged into, not by profile name, so a subscription called `work` here and `personal` on a synced machine is counted once, under this machine's name. Sync brings back the other machine's marker list (session ids and times only) along with its transcripts.
+
+`ccmoneta doctor` lists the accounts it found and flags a profile that is not logged in.
+
 ## How the numbers are computed
 
 - **Limits** are per Claude account, so they are shown as reported and never summed across machines.
@@ -119,9 +129,10 @@ Under `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`:
 | Path | Contents |
 |---|---|
 | `cost.json` | The spend data set, with the day it covers and when it was gathered |
-| `limits.json` | The latest limit windows, and where they came from |
+| `limits.json` | The latest limit windows, and where they came from; with several aimux accounts, `limits/<account>.json` instead |
 | `health.json` | Claude's service status and the installed-vs-published Claude Code version |
-| `hosts/<name>/` | A mirrored machine's transcripts, with `last-sync`, `last-attempt` and `last-error` |
+| `hosts/<name>/` | A mirrored machine's transcripts, with `last-sync`, `last-attempt`, `last-error` and `markers.tsv` (which of its accounts ran each session) |
+| `views/` | Each account's part of each machine's transcripts, rebuilt on every spend refresh; almost all hard links, so it takes next to no space |
 | `jobs/` | Each refresh job's last attempt, failures and backoff |
 | `refresh.log` | One line per background refresh, and a note when a cache file does not read |
 
@@ -135,6 +146,8 @@ Under `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`:
 | `CCMONETA_CLAUDE` | The claude executable to read the installed version from |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Claude Code's own setting; when set, the version lookup is skipped, as the built-in updater does |
 | `CCMONETA_SSH` | The ssh executable, for sync's listing and rsync's transport |
+| `CCMONETA_AIMUX` | The aimux executable to read limits from |
+| `CCMONETA_AIMUX_DIR` | Where aimux keeps `config.yaml`, instead of `~/.aimux` |
 
 ## Tests
 

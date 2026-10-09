@@ -11,10 +11,11 @@ use std::process::{Command, Stdio};
 
 use chrono::NaiveDate;
 
+use crate::accounts;
 use crate::config::Config;
 use crate::cost::{self, CostSnapshot};
 use crate::health::{self, HealthSnapshot};
-use crate::limits::{self, Snapshot};
+use crate::limits::{self, AccountLimits, Snapshot};
 use crate::store::{self, Job, JobState};
 use crate::sync;
 
@@ -74,6 +75,14 @@ pub fn limits_poll_due(snap: Option<&Snapshot>, now: i64, max_age: i64) -> bool 
 
 /// The status page and the version lookup are other people's services, so this
 /// is deliberately the slowest of the schedules.
+/// Whether any account's limits are missing or old: one read covers them all.
+pub fn any_limits_due(all: &[AccountLimits], now: i64, max_age: i64) -> bool {
+    all.is_empty()
+        || all
+            .iter()
+            .any(|a| limits_poll_due(a.snap.as_ref(), now, max_age))
+}
+
 pub fn health_is_due(snap: Option<&HealthSnapshot>, now: i64, max_age: i64) -> bool {
     snap.is_none_or(|s| s.age(now) >= max_age)
 }
@@ -135,8 +144,8 @@ pub fn cost_if_stale(cfg: &Config, snap: Option<&CostSnapshot>) {
     }
 }
 
-pub fn limits_if_due(cfg: &Config, snap: Option<&Snapshot>) {
-    if limits_poll_due(snap, store::now(), cfg.limits.max_age_seconds) {
+pub fn limits_if_due(cfg: &Config, all: &[AccountLimits]) {
+    if any_limits_due(all, store::now(), cfg.limits.max_age_seconds) {
         trigger(Job::Limits, false);
     }
 }
@@ -234,9 +243,11 @@ pub fn run(cfg: &Config, job: Job, force: bool) -> i32 {
                 today(),
                 cfg.cost.refresh_seconds,
             ),
-            Job::Limits => {
-                limits_poll_due(limits::load().as_ref(), now, cfg.limits.max_age_seconds)
-            }
+            Job::Limits => any_limits_due(
+                &limits::load_all(&accounts::local()),
+                now,
+                cfg.limits.max_age_seconds,
+            ),
             Job::Sync => !sync::due_hosts(cfg, now).is_empty(),
             Job::Health => {
                 cfg.health.any()

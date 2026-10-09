@@ -8,6 +8,7 @@
 
 use std::io::Read;
 
+use crate::accounts;
 use crate::config::Config;
 use crate::cost;
 use crate::health;
@@ -24,20 +25,43 @@ pub fn run(cfg: &Config) -> i32 {
         return 1;
     };
 
+    // The payload's limits are those of the account this Claude Code runs
+    // under, so they are saved to that account alone. Under a config directory
+    // no aimux profile names, they are shown but not saved: written anywhere,
+    // they would overwrite another account's.
+    let accounts = accounts::local();
+    let several = accounts::several(&accounts);
+    // With one account there is nothing to confuse it with, whatever
+    // CLAUDE_CONFIG_DIR says.
+    let current = if several {
+        accounts::current(&accounts)
+    } else {
+        accounts.first()
+    };
     let from_payload = limits::from_statusline(&payload);
     let shown = if from_payload.has_windows() {
-        let _ = limits::save(&Snapshot {
-            limits: from_payload.clone(),
-            captured_at: store::now(),
-            source: "statusline".into(),
-        });
+        if let Some(a) = current {
+            let _ = limits::save_for(
+                a,
+                several,
+                &Snapshot {
+                    limits: from_payload.clone(),
+                    captured_at: store::now(),
+                    source: "statusline".into(),
+                },
+            );
+        }
         from_payload
     } else {
         // The payload has no windows until a session's first API response.
         // Show the last known ones rather than blanking them, and do not
         // overwrite a good snapshot with an empty one.
-        limits::load().map(|s| s.limits).unwrap_or_default()
+        current
+            .and_then(|a| limits::load_for(a, several))
+            .map(|s| s.limits)
+            .unwrap_or_default()
     };
+    let name = current.filter(|_| several).map(|a| a.name.as_str());
 
     let snap = cost::load();
     refresh::cost_if_stale(cfg, snap.as_ref());
@@ -52,7 +76,13 @@ pub fn run(cfg: &Config) -> i32 {
     );
     println!(
         "{}",
-        render(&shown, &payload, &label, health::marker(health.as_ref()))
+        render(
+            &shown,
+            name,
+            &payload,
+            &label,
+            health::marker(health.as_ref())
+        )
     );
     0
 }
@@ -60,6 +90,7 @@ pub fn run(cfg: &Config) -> i32 {
 /// The line Claude Code shows. Kept terse: it sits under the prompt.
 fn render(
     limits: &Limits,
+    account: Option<&str>,
     payload: &serde_json::Value,
     cost_label: &str,
     health: Option<String>,
@@ -67,6 +98,10 @@ fn render(
     let mut parts = Vec::new();
     if let Some(model) = payload["model"]["display_name"].as_str() {
         parts.push(model.to_string());
+    }
+    // With several accounts, say whose limits these are.
+    if let Some(name) = account {
+        parts.push(name.to_string());
     }
     if let Some(w) = limits.five_hour {
         parts.push(format!("5h {:.0}%", w.percent));

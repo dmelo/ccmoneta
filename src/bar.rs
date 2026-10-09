@@ -13,10 +13,11 @@
 
 use chrono::NaiveDate;
 
+use crate::accounts;
 use crate::config::Config;
 use crate::cost::{self, CostSnapshot, Host};
 use crate::health::{self, HealthSnapshot};
-use crate::limits::{self, Snapshot};
+use crate::limits::{self, AccountLimits, Snapshot};
 use crate::refresh;
 use crate::store::{self, Job, JobState, ago};
 
@@ -39,7 +40,10 @@ impl Format {
 /// Everything read from the cache that a bar shows.
 pub struct Inputs<'a> {
     pub cfg: &'a Config,
+    /// The one account's limits, when there is one account.
     pub limits: Option<&'a Snapshot>,
+    /// Every account's limits, when aimux runs several; then `limits` is unused.
+    pub accounts: &'a [AccountLimits],
     pub limits_state: &'a JobState,
     pub cost: Option<&'a CostSnapshot>,
     pub cost_state: &'a JobState,
@@ -99,6 +103,23 @@ fn cost_lines(inp: &Inputs) -> Vec<String> {
                 "today ${:.2} · 7d ${:.2} · {}d ${:.2}",
                 c.today, c.week, inp.cfg.cost.window_days, c.window
             ));
+            if c.by_account.len() > 1 {
+                let today = c.days.get(&today);
+                let accounts: Vec<String> = c
+                    .by_account
+                    .iter()
+                    .map(|(name, v)| {
+                        let t = today
+                            .and_then(|d| d.by_account.iter().find(|(n, _)| n == name))
+                            .map_or(0.0, |a| a.1);
+                        format!(
+                            "{name} ${t:.2} today, ${v:.2} {}d",
+                            inp.cfg.cost.window_days
+                        )
+                    })
+                    .collect();
+                out.push(accounts.join(" · "));
+            }
             if c.by_host.len() > 1 {
                 let hosts: Vec<String> = c
                     .by_host
@@ -148,6 +169,17 @@ pub fn view(inp: &Inputs) -> View {
                 .collect()
         })
         .unwrap_or_default();
+
+    if inp.accounts.len() > 1 {
+        return several_view(
+            inp,
+            &cost_label,
+            cost_error,
+            &health_suffix,
+            health_lines,
+            health_marker.is_some(),
+        );
+    }
 
     let Some(snap) = inp.limits else {
         // No limits cached yet: the first poll is running, or keeps failing.
@@ -247,6 +279,89 @@ pub fn view(inp: &Inputs) -> View {
     }
 }
 
+/// The block when aimux runs several accounts: each account's two windows,
+/// named, then today's spend. `main 5h 12% · 7d 40% │ second 5h 3% · 7d 61%`.
+/// The colour and level follow the fullest window of any account.
+fn several_view(
+    inp: &Inputs,
+    cost_label: &str,
+    cost_error: bool,
+    health_suffix: &str,
+    health_lines: Vec<String>,
+    attention: bool,
+) -> View {
+    let mut parts = Vec::new();
+    let mut shorts = Vec::new();
+    let mut tooltip = Vec::new();
+    let mut worst: Option<f64> = None;
+    let mut stale = false;
+    for a in inp.accounts {
+        let name = &a.account.name;
+        let Some(snap) = &a.snap else {
+            parts.push(format!("{name} …"));
+            shorts.push("…".to_string());
+            tooltip.push(format!("{name}: no limits yet"));
+            continue;
+        };
+        let (five, seven) = (snap.limits.five_hour, snap.limits.seven_day);
+        let pct =
+            |w: Option<limits::Window>| w.map_or("?".to_string(), |w| format!("{:.0}%", w.percent));
+        parts.push(format!("{name} 5h {} · 7d {}", pct(five), pct(seven)));
+        shorts.push(format!(
+            "{}/{}",
+            five.map_or("?".into(), |w| format!("{:.0}", w.percent)),
+            seven.map_or("?".into(), |w| format!("{:.0}", w.percent))
+        ));
+        for w in [five, seven].into_iter().flatten() {
+            worst = Some(worst.map_or(w.percent, |x: f64| x.max(w.percent)));
+        }
+        let account_stale = snap.age(inp.now) > inp.cfg.limits.max_age_seconds;
+        stale |= account_stale;
+        let mut line = format!("{name}:");
+        for (label, w) in [("5h", five), ("7d", seven)] {
+            if let Some(w) = w {
+                let reset = w
+                    .resets_in(inp.now)
+                    .map(|r| format!(" (resets in {})", ago(r)))
+                    .unwrap_or_default();
+                line.push_str(&format!(" {label} {:.0}%{reset}", w.percent));
+            }
+        }
+        line.push_str(&format!(
+            ", via {} {} ago",
+            snap.source,
+            ago(snap.age(inp.now))
+        ));
+        tooltip.push(line);
+    }
+    if let Some(e) = &inp.limits_state.last_error {
+        tooltip.push(format!("last limits refresh failed: {e}"));
+    }
+    tooltip.extend(cost_lines(inp));
+    tooltip.extend(health_lines);
+
+    let mut full = parts.join(" │ ");
+    full.push_str(&format!(" · {cost_label}{health_suffix}"));
+    if stale {
+        full.push_str(" ⋯");
+    }
+    let (level, color) = match worst {
+        Some(p) => level(p),
+        None => ("unknown", "#6272a4"),
+    };
+    View {
+        full,
+        short: shorts.join(" "),
+        color,
+        level,
+        percentage: worst.unwrap_or(0.0).round().clamp(0.0, 100.0) as u8,
+        tooltip: tooltip.join("\n"),
+        stale,
+        cost_error,
+        attention,
+    }
+}
+
 pub fn i3blocks(v: &View) -> String {
     format!("{}\n{}\n{}", v.full, v.short, v.color)
 }
@@ -322,8 +437,9 @@ pub fn run(cfg: &Config, format: Format) -> i32 {
         }
     }
 
-    let limits_snap = limits::load();
-    refresh::limits_if_due(cfg, limits_snap.as_ref());
+    let all = limits::load_all(&accounts::local());
+    refresh::limits_if_due(cfg, &all);
+    let limits_snap = all.first().and_then(|a| a.snap.clone());
     let cost_snap = cost::load();
     refresh::cost_if_stale(cfg, cost_snap.as_ref());
     refresh::sync_if_due(cfg);
@@ -336,6 +452,7 @@ pub fn run(cfg: &Config, format: Format) -> i32 {
     let v = view(&Inputs {
         cfg,
         limits: limits_snap.as_ref(),
+        accounts: &all,
         limits_state: &limits_state,
         cost: cost_snap.as_ref(),
         cost_state: &cost_state,
@@ -427,6 +544,7 @@ mod tests {
         view(&Inputs {
             cfg: &cfg,
             limits,
+            accounts: &[],
             limits_state,
             cost,
             cost_state,

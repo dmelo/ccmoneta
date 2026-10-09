@@ -5,6 +5,7 @@
 //! when that cache is stale, so any one of them alone shows correct numbers.
 //! See docs/design.md.
 
+mod accounts;
 mod bar;
 mod config;
 mod cost;
