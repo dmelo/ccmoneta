@@ -41,12 +41,12 @@ impl Sandbox {
         .unwrap();
         fs::write(
             home.join(".claude/.claude.json"),
-            r#"{"oauthAccount":{"accountUuid":"uuid-main"}}"#,
+            r#"{"oauthAccount":{"accountUuid":"uuid-main","organizationType":"claude_max","organizationRateLimitTier":"default_claude_max_20x"}}"#,
         )
         .unwrap();
         fs::write(
             home.join(".aimux/profiles/second/.claude.json"),
-            r#"{"oauthAccount":{"accountUuid":"uuid-second"}}"#,
+            r#"{"oauthAccount":{"accountUuid":"uuid-second","organizationType":"claude_pro"}}"#,
         )
         .unwrap();
 
@@ -139,6 +139,11 @@ fn limits_come_from_aimux_for_every_account() {
         first.starts_with("main 5h 12% · 7d 34% │ second 5h 56% · 7d 78%"),
         "{first}"
     );
+    let waybar: serde_json::Value =
+        serde_json::from_str(&stdout(&sb.run(&["bar", "--format", "waybar"]))).unwrap();
+    let tooltip = waybar["tooltip"].as_str().unwrap();
+    assert!(tooltip.contains("main (Max 20x): 5h 12%"), "{tooltip}");
+    assert!(tooltip.contains("second (Pro): 5h 56%"), "{tooltip}");
 }
 
 #[test]

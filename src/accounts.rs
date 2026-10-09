@@ -27,6 +27,8 @@ pub struct Account {
     /// `oauthAccount.accountUuid`, when the config directory records one.
     pub uuid: Option<String>,
     pub config_dir: PathBuf,
+    /// The subscription, as Claude names it: "Max 20x", "Max 5x", "Pro"...
+    pub plan: Option<String>,
     /// aimux's source profile, `~/.claude`: the account turns go to when no
     /// marker says otherwise.
     pub source: bool,
@@ -38,6 +40,14 @@ impl Account {
         self.uuid
             .clone()
             .unwrap_or_else(|| format!("profile:{}", self.name))
+    }
+
+    /// Its name with its plan, as the limits show it: `main (Max 20x)`.
+    pub fn titled(&self) -> String {
+        match &self.plan {
+            Some(plan) if !self.name.is_empty() => format!("{} ({plan})", self.name),
+            _ => self.name.clone(),
+        }
     }
 }
 
@@ -124,22 +134,57 @@ pub fn parse_profiles(yaml: &str) -> Vec<(String, String, bool)> {
     out
 }
 
-/// `oauthAccount.accountUuid` for a config directory. Claude Code keeps
-/// `.claude.json` inside `CLAUDE_CONFIG_DIR` when that is set, and in the home
-/// directory for the default `~/.claude`.
-pub fn account_uuid(config_dir: &Path) -> Option<String> {
+/// The `oauthAccount` object Claude Code records for a config directory. It
+/// keeps `.claude.json` inside `CLAUDE_CONFIG_DIR` when that is set, and in the
+/// home directory for the default `~/.claude`.
+fn oauth_account(config_dir: &Path) -> Option<serde_json::Value> {
     let mut candidates = vec![config_dir.join(".claude.json")];
     if config_dir == store::home().join(".claude") {
         candidates.push(store::home().join(".claude.json"));
     }
     candidates.iter().find_map(|f| {
         let raw = std::fs::read(f).ok()?;
-        let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-        v["oauthAccount"]["accountUuid"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(String::from)
+        let mut v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        let account = v.get_mut("oauthAccount")?.take();
+        account.is_object().then_some(account)
     })
+}
+
+/// `oauthAccount.accountUuid` for a config directory.
+pub fn account_uuid(config_dir: &Path) -> Option<String> {
+    oauth_account(config_dir)?["accountUuid"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// The subscription an `oauthAccount` records, as Claude names it.
+///
+/// `organizationType` names the plan (`claude_max`, `claude_pro`, ...) and
+/// `organizationRateLimitTier` its size (`default_claude_max_20x`). The size is
+/// read only from a tier that ends in `_<n>x`; anything else is shown by its
+/// plan name alone, and an account with no plan type shows none.
+pub fn plan_label(account: &serde_json::Value) -> Option<String> {
+    let kind = account["organizationType"]
+        .as_str()?
+        .strip_prefix("claude_")?;
+    let mut chars = kind.chars();
+    let mut label: String = chars.next()?.to_uppercase().chain(chars).collect();
+    let size = account["organizationRateLimitTier"]
+        .as_str()
+        .and_then(|t| t.rsplit('_').next())
+        .filter(|s| {
+            s.len() > 1 && s.ends_with('x') && s[..s.len() - 1].bytes().all(|b| b.is_ascii_digit())
+        });
+    if let Some(size) = size {
+        label.push(' ');
+        label.push_str(size);
+    }
+    Some(label)
+}
+
+fn plan(config_dir: &Path) -> Option<String> {
+    plan_label(&oauth_account(config_dir)?)
 }
 
 /// Every account on this machine, source first. Profiles logged into the same
@@ -153,6 +198,7 @@ pub fn local() -> Vec<Account> {
         return vec![Account {
             name: String::new(),
             uuid: account_uuid(&dir),
+            plan: plan(&dir),
             config_dir: dir,
             source: true,
         }];
@@ -167,6 +213,7 @@ pub fn local() -> Vec<Account> {
         out.push(Account {
             name,
             uuid,
+            plan: plan(&dir),
             config_dir: dir,
             source,
         });
@@ -436,6 +483,31 @@ private:
         );
         assert!(parse_profiles("version: 1\n").is_empty());
         assert!(parse_profiles("not yaml at all").is_empty());
+    }
+
+    #[test]
+    fn plans_are_named_from_the_account_record() {
+        let plan = |kind: &str, tier: &str| {
+            plan_label(&serde_json::json!({
+                "organizationType": kind,
+                "organizationRateLimitTier": tier,
+            }))
+        };
+        assert_eq!(
+            plan("claude_max", "default_claude_max_20x").as_deref(),
+            Some("Max 20x")
+        );
+        assert_eq!(
+            plan("claude_max", "default_claude_max_5x").as_deref(),
+            Some("Max 5x")
+        );
+        assert_eq!(
+            plan("claude_pro", "default_claude_ai").as_deref(),
+            Some("Pro")
+        );
+        assert_eq!(plan("claude_team", "").as_deref(), Some("Team"));
+        assert_eq!(plan_label(&serde_json::json!({})), None);
+        assert_eq!(plan("something_else", "x").as_deref(), None);
     }
 
     #[test]

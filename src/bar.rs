@@ -297,6 +297,7 @@ fn several_view(
     let mut stale = false;
     for a in inp.accounts {
         let name = &a.account.name;
+        let titled = a.account.titled();
         let Some(snap) = &a.snap else {
             parts.push(format!("{name} …"));
             shorts.push("…".to_string());
@@ -317,7 +318,7 @@ fn several_view(
         }
         let account_stale = snap.age(inp.now) > inp.cfg.limits.max_age_seconds;
         stale |= account_stale;
-        let mut line = format!("{name}:");
+        let mut line = format!("{titled}:");
         for (label, w) in [("5h", five), ("7d", seven)] {
             if let Some(w) = w {
                 let reset = w

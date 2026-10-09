@@ -209,7 +209,7 @@ pub fn run(cfg: &Config, cfg_error: Option<&str>) -> i32 {
     }
     for a in &accts {
         let label = if several {
-            format!("{}: ", a.name)
+            format!("{}: ", a.titled())
         } else {
             String::new()
         };

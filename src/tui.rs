@@ -268,7 +268,7 @@ fn limit_rows(app: &App) -> Vec<Line<'static>> {
     let several = app.limits.len() > 1;
     let mut lines = Vec::new();
     for a in &app.limits {
-        let name = &a.account.name;
+        let name = a.account.titled();
         match &a.snap {
             Some(snap) => {
                 let now = store::now();
@@ -278,7 +278,11 @@ fn limit_rows(app: &App) -> Vec<Line<'static>> {
                 } else {
                     "live".into()
                 };
-                let source = format!("via {} · {}", snap.source, staleness);
+                let mut source = format!("via {} · {}", snap.source, staleness);
+                // One account has no header to carry its plan, so it leads here.
+                if let (false, Some(plan)) = (several, &a.account.plan) {
+                    source = format!("{plan} · {source}");
+                }
                 if several {
                     lines.push(Line::from(vec![
                         Span::styled(
