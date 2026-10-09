@@ -73,8 +73,6 @@ pub fn limits_poll_due(snap: Option<&Snapshot>, now: i64, max_age: i64) -> bool 
     snap.is_none_or(|s| s.age(now) >= max_age)
 }
 
-/// The status page and the version lookup are other people's services, so this
-/// is deliberately the slowest of the schedules.
 /// Whether any account's limits are missing or old: one read covers them all.
 pub fn any_limits_due(all: &[AccountLimits], now: i64, max_age: i64) -> bool {
     all.is_empty()
@@ -83,6 +81,8 @@ pub fn any_limits_due(all: &[AccountLimits], now: i64, max_age: i64) -> bool {
             .any(|a| limits_poll_due(a.snap.as_ref(), now, max_age))
 }
 
+/// The status page and the version lookup are other people's services, so this
+/// is deliberately the slowest of the schedules.
 pub fn health_is_due(snap: Option<&HealthSnapshot>, now: i64, max_age: i64) -> bool {
     snap.is_none_or(|s| s.age(now) >= max_age)
 }
@@ -276,7 +276,7 @@ pub fn run(cfg: &Config, job: Job, force: bool) -> i32 {
     let started = std::time::Instant::now();
     let outcome = match job {
         Job::Cost => cost::refresh(cfg),
-        Job::Limits => limits::refresh(),
+        Job::Limits => limits::refresh(cfg.limits.max_age_seconds),
         Job::Sync => sync::run_due(cfg, force),
         Job::Health => health::refresh(&cfg.health),
     };
@@ -432,6 +432,7 @@ mod tests {
             limits: Limits::default(),
             captured_at: NOW - age,
             source: "statusline".into(),
+            error: None,
         };
         assert!(limits_poll_due(None, NOW, 900));
         assert!(!limits_poll_due(Some(&snap(899)), NOW, 900));

@@ -312,3 +312,70 @@ fn an_isolated_profile_counts_its_own_transcripts() {
         serde_json::json!([["second", 3.0], ["main", 1.0]])
     );
 }
+
+#[test]
+fn an_account_aimux_cannot_read_is_shown_without_failing_the_others() {
+    let sb = Sandbox::new("expired");
+    fs::write(
+        sb.root.join("fake-aimux"),
+        r#"#!/bin/bash
+case "$1" in
+  status) printf '{"fetchedAt":%s000,"profiles":{"main":{"cli":"claude","status":{"fiveHourPct":12,"weeklyPct":34}},"second":{"cli":"claude","status":null,"error":"auth"}}}' "$(date +%s)" ;;
+esac
+"#,
+    )
+    .unwrap();
+    let o = sb.run(&["refresh", "limits", "--force"]);
+    assert!(
+        o.status.success(),
+        "one readable account is a success: {o:?}"
+    );
+    let bar = stdout(&sb.run(&["bar"]));
+    let first = bar.lines().next().unwrap();
+    assert!(
+        first.starts_with("main 5h 12% · 7d 34% │ second ✗"),
+        "{first}"
+    );
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(sb.cache("jobs/limits.json")).unwrap()).unwrap();
+    assert_eq!(state["failures"], 0, "{state}");
+}
+
+#[test]
+fn a_second_profile_on_the_same_account_credits_that_account() {
+    let sb = Sandbox::new("folded");
+    let twin = sb.home().join(".aimux/profiles/twin");
+    fs::create_dir_all(twin.join("session-env/s1")).unwrap();
+    fs::write(
+        twin.join(".claude.json"),
+        r#"{"oauthAccount":{"accountUuid":"uuid-second"}}"#,
+    )
+    .unwrap();
+    let config = sb.home().join(".aimux/config.yaml");
+    let yaml = fs::read_to_string(&config).unwrap().replace(
+        "private:",
+        "  twin:\n    cli: claude\n    path: ~/.aimux/profiles/twin\nprivate:",
+    );
+    fs::write(&config, yaml).unwrap();
+    let later = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    fs::write(
+        sb.home().join(".claude/projects/-home-me-code-p/s1.jsonl"),
+        format!("{{\"timestamp\":\"{later}\"}}\n"),
+    )
+    .unwrap();
+    let o = sb.run(&["refresh", "cost", "--force"]);
+    assert!(o.status.success(), "{o:?}");
+    // The fake ccusage reports an empty view as $0, which real ccusage omits.
+    let spent: Vec<serde_json::Value> = sb.cost()["costs"]["by_account"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a[1].as_f64() != Some(0.0))
+        .cloned()
+        .collect();
+    assert_eq!(
+        spent,
+        vec![serde_json::json!(["second", 1.0])],
+        "twin's session is the second account's, listed once"
+    );
+}

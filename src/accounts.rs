@@ -27,6 +27,9 @@ pub struct Account {
     /// `oauthAccount.accountUuid`, when the config directory records one.
     pub uuid: Option<String>,
     pub config_dir: PathBuf,
+    /// Further profiles logged into the same account, folded into this one.
+    /// Their markers count for it like its own.
+    pub also: Vec<PathBuf>,
     /// The subscription, as Claude names it: "Max 20x", "Max 5x", "Pro"...
     pub plan: Option<String>,
     /// aimux's source profile, `~/.claude`: the account turns go to when no
@@ -42,6 +45,11 @@ impl Account {
             .unwrap_or_else(|| format!("profile:{}", self.name))
     }
 
+    /// The account key as a file name.
+    pub fn file_name(&self) -> String {
+        file_name(&self.key())
+    }
+
     /// Its name with its plan, as the limits show it: `main (Max 20x)`.
     pub fn titled(&self) -> String {
         match &self.plan {
@@ -49,6 +57,19 @@ impl Account {
             _ => self.name.clone(),
         }
     }
+}
+
+/// A key as a file name: letters, digits and '-' kept, anything else '_'.
+pub fn file_name(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// `CCMONETA_AIMUX_DIR` replaces `~/.aimux`, for the tests.
@@ -152,10 +173,7 @@ fn oauth_account(config_dir: &Path) -> Option<serde_json::Value> {
 
 /// `oauthAccount.accountUuid` for a config directory.
 pub fn account_uuid(config_dir: &Path) -> Option<String> {
-    oauth_account(config_dir)?["accountUuid"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(String::from)
+    identity(config_dir).0
 }
 
 /// The subscription an `oauthAccount` records, as Claude names it.
@@ -183,8 +201,16 @@ pub fn plan_label(account: &serde_json::Value) -> Option<String> {
     Some(label)
 }
 
-fn plan(config_dir: &Path) -> Option<String> {
-    plan_label(&oauth_account(config_dir)?)
+/// An account's uuid and plan, from one read of its record.
+fn identity(config_dir: &Path) -> (Option<String>, Option<String>) {
+    let Some(account) = oauth_account(config_dir) else {
+        return (None, None);
+    };
+    let uuid = account["accountUuid"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    (uuid, plan_label(&account))
 }
 
 /// Every account on this machine, source first. Profiles logged into the same
@@ -195,26 +221,33 @@ pub fn local() -> Vec<Account> {
         .unwrap_or_default();
     if profiles.is_empty() {
         let dir = store::home().join(".claude");
+        let (uuid, plan) = identity(&dir);
         return vec![Account {
             name: String::new(),
-            uuid: account_uuid(&dir),
-            plan: plan(&dir),
+            uuid,
+            plan,
             config_dir: dir,
+            also: Vec::new(),
             source: true,
         }];
     }
     let mut out: Vec<Account> = Vec::new();
     for (name, path, source) in profiles {
         let dir = expand_home(&path);
-        let uuid = account_uuid(&dir);
-        if uuid.is_some() && out.iter().any(|a| a.uuid == uuid) {
+        let (uuid, plan) = identity(&dir);
+        // A second profile on the same account: its sessions are that
+        // account's, and if it is the source, so is the account.
+        if let Some(first) = out.iter_mut().find(|a| uuid.is_some() && a.uuid == uuid) {
+            first.also.push(dir);
+            first.source |= source;
             continue;
         }
         out.push(Account {
             name,
             uuid,
-            plan: plan(&dir),
+            plan,
             config_dir: dir,
+            also: Vec::new(),
             source,
         });
     }
@@ -359,8 +392,10 @@ pub fn local_owners(accounts: &[Account]) -> Owners {
     let mut owners = Owners::new(default);
     for a in accounts {
         let key = a.key();
-        for (session, born) in markers(&a.config_dir) {
-            owners.add(&session, born, &key);
+        for dir in std::iter::once(&a.config_dir).chain(&a.also) {
+            for (session, born) in markers(dir) {
+                owners.add(&session, born, &key);
+            }
         }
     }
     owners
@@ -370,6 +405,9 @@ pub fn local_owners(accounts: &[Account]) -> Owners {
 /// accounts and markers, read back by `parse_remote_markers`. It prints, per
 /// config directory, one `@` line (`@\t<uuid>\t<profile>\t<1 if source>`) and
 /// then one `<session>\t<born>` line per marker.
+///
+/// The uuid is the first `accountUuid` at or after `"oauthAccount"`, the
+/// object the local side reads it from; a file without one names no uuid.
 ///
 /// Only names and times leave the machine. The profile directories are found by
 /// aimux's default layout, `~/.aimux/profiles/<name>`. `stat` is asked which
@@ -382,7 +420,7 @@ for d in "$HOME/.claude" "$HOME"/.aimux/profiles/*; do
   [ -d "$d" ] || continue
   if [ "$d" = "$HOME/.claude" ]; then n=main; s=1; j="$d/.claude.json"; [ -f "$j" ] || j="$HOME/.claude.json"
   else n=$(basename "$d"); s=0; j="$d/.claude.json"; fi
-  u=$(grep -o '"accountUuid": *"[^"]*"' "$j" 2>/dev/null | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
+  u=$(tr -d '\n' < "$j" 2>/dev/null | grep -o '"oauthAccount": *{.*' | grep -o '"accountUuid": *"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
   printf '@\t%s\t%s\t%s\n' "$u" "$n" "$s"
   [ -d "$d/session-env" ] && [ ! -L "$d/session-env" ] || continue
   (cd "$d/session-env" && for m in *; do

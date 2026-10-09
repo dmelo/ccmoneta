@@ -48,6 +48,7 @@ pub fn run(cfg: &Config) -> i32 {
                     limits: from_payload.clone(),
                     captured_at: store::now(),
                     source: "statusline".into(),
+                    error: None,
                 },
             );
         }

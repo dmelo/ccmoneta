@@ -61,9 +61,14 @@ pub struct Snapshot {
     /// Epoch seconds when these numbers were captured, not when they were
     /// written, so a re-read of a cached file still ages correctly.
     pub captured_at: i64,
-    /// "statusline" or "oauth", carried through to the UI so a stale or
-    /// second-hand number can say where it came from.
+    /// "statusline", "oauth" or "aimux", carried through to the UI so a stale
+    /// or second-hand number can say where it came from.
     pub source: String,
+    /// Why this account could not be read, when it could not: aimux reports a
+    /// login that has expired, for one. Recorded on the account rather than
+    /// failing the job, so one account's trouble does not hold back the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl Snapshot {
@@ -85,20 +90,9 @@ fn path_for(account: &Account, several: bool) -> PathBuf {
     if !several {
         return store::cache_dir().join("limits.json");
     }
-    let name: String = account
-        .key()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
     store::cache_dir()
         .join("limits")
-        .join(format!("{name}.json"))
+        .join(format!("{}.json", account.file_name()))
 }
 
 pub fn save_for(account: &Account, several: bool, snap: &Snapshot) -> std::io::Result<()> {
@@ -219,10 +213,10 @@ pub fn from_aimux(body: &serde_json::Value) -> HashMap<String, Result<Limits, St
 }
 
 /// Run `aimux status --json`. `--max-age` lets aimux hand back a reading it
-/// took for someone else within the last few minutes instead of probing again.
-fn fetch_aimux() -> Result<(serde_json::Value, i64), String> {
+/// took for someone else within that many seconds instead of probing again.
+fn fetch_aimux(max_age: i64) -> Result<(serde_json::Value, i64), String> {
     let out = Command::new(aimux_exe())
-        .args(["status", "--json", "--max-age", "120"])
+        .args(["status", "--json", "--max-age", &max_age.to_string()])
         .stdin(Stdio::null())
         .output()
         .map_err(|e| {
@@ -290,9 +284,13 @@ pub fn fetch_oauth() -> Result<Limits, String> {
 /// The limits job: read every account's limits and cache them.
 ///
 /// One account polls the usage endpoint itself. Several are read through aimux,
-/// which holds their logins; an account aimux could not read keeps its last
-/// snapshot, and the job fails, naming it, so the backoff applies.
-pub fn refresh() -> Result<(), String> {
+/// which holds their logins. An account aimux could not read is saved with the
+/// reason, so it is shown and not asked about again until it is due like the
+/// others; the job fails only when no account could be read at all.
+///
+/// `max_age` is the limits' own threshold: aimux may hand back a reading it
+/// took earlier, and one older than that would be due again on arrival.
+pub fn refresh(max_age: i64) -> Result<(), String> {
     let accounts = accounts::local();
     if !accounts::several(&accounts) {
         let account = &accounts[0];
@@ -300,33 +298,37 @@ pub fn refresh() -> Result<(), String> {
             limits: fetch_oauth()?,
             captured_at: store::now(),
             source: "oauth".into(),
+            error: None,
         };
         return save_for(account, false, &snap)
             .map_err(|e| format!("writing {}: {e}", path_for(account, false).display()));
     }
 
-    let (body, at) = fetch_aimux()?;
+    let (body, at) = fetch_aimux((max_age / 2).clamp(0, 120))?;
     let mut read = from_aimux(&body);
     let mut failed = Vec::new();
     for a in &accounts {
-        match read.remove(&a.name) {
-            Some(Ok(limits)) => {
-                let snap = Snapshot {
-                    limits,
-                    captured_at: at,
-                    source: "aimux".into(),
-                };
-                save_for(a, true, &snap)
-                    .map_err(|e| format!("writing {}: {e}", path_for(a, true).display()))?;
-            }
-            Some(Err(e)) => failed.push(format!("{}: {e}", a.name)),
-            None => failed.push(format!("{}: not in aimux status", a.name)),
+        let (limits, error) = match read.remove(&a.name) {
+            Some(Ok(limits)) => (limits, None),
+            Some(Err(e)) => (Limits::default(), Some(e)),
+            None => (Limits::default(), Some("not in aimux status".to_string())),
+        };
+        if let Some(e) = &error {
+            failed.push(format!("{}: {e}", a.name));
         }
+        let snap = Snapshot {
+            limits,
+            captured_at: at,
+            source: "aimux".into(),
+            error,
+        };
+        save_for(a, true, &snap)
+            .map_err(|e| format!("writing {}: {e}", path_for(a, true).display()))?;
     }
-    if failed.is_empty() {
-        Ok(())
-    } else {
+    if failed.len() == accounts.len() {
         Err(failed.join("; "))
+    } else {
+        Ok(())
     }
 }
 

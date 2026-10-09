@@ -7,7 +7,8 @@
 //!
 //! Each sync also records which of the host's Claude accounts ran each session,
 //! in `markers.tsv` (see accounts::REMOTE_MARKERS), so its spend can be split
-//! per account like this machine's.
+//! per account like this machine's. That takes a second ssh command, and only
+//! for a host read from the default `~/.claude/projects`.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -258,8 +259,13 @@ pub fn sync_target(t: &Target, days: i64) -> Result<Report, String> {
         Ok(_) => {
             // Best-effort: without it the host's spend all goes to one
             // account, as it did before accounts, which is no reason to call
-            // the transcript sync failed.
-            if let Err(e) = fetch_markers(t, &dir) {
+            // the transcript sync failed. The listing reads `~/.claude` and
+            // aimux's profiles, so a host whose transcripts come from another
+            // directory would be credited by somebody else's markers: it gets
+            // none, and any left from before are removed.
+            if t.remote_dir != DEFAULT_REMOTE_DIR {
+                let _ = fs::remove_file(dir.join("markers.tsv"));
+            } else if let Err(e) = fetch_markers(t, &dir) {
                 store::log(&format!("account markers from {}: {e}", t.name));
             }
             let _ = store::write_text(&dir.join("last-sync"), &store::now().to_string());

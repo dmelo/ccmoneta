@@ -306,7 +306,8 @@ impl Tally {
 /// One ccusage report: a host's transcripts, or the part one account ran.
 struct Run {
     host: String,
-    /// The account's name as shown.
+    /// The account key (see accounts::Account::key); names are put on at
+    /// the end, so two accounts that share a name are never added together.
     account: String,
     report: ProjectsReport,
 }
@@ -439,7 +440,7 @@ pub fn gather(days: i64) -> Result<Costs, String> {
         .zip(reports)
         .map(|(src, r)| {
             r.map(|report| Run {
-                account: names.get(&src.account).cloned().unwrap_or(src.account),
+                account: src.account,
                 host: src.host,
                 report,
             })
@@ -447,8 +448,49 @@ pub fn gather(days: i64) -> Result<Costs, String> {
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut costs = assemble(&runs, first, today);
+    let labels = account_labels(&names, runs.iter().map(|r| r.account.as_str()));
+    let label = |key: &mut String| {
+        if let Some(l) = labels.get(key.as_str()) {
+            *key = l.clone();
+        }
+    };
+    costs.by_account.iter_mut().for_each(|(k, _)| label(k));
+    for day in costs.days.values_mut() {
+        day.by_account.iter_mut().for_each(|(k, _)| label(k));
+    }
     costs.hosts = hosts;
     Ok(costs)
+}
+
+/// What each account key is called on screen: its profile name, or, when it
+/// has none or shares it with another account, the name (or "account") and
+/// the start of its key.
+fn account_labels<'a>(
+    names: &HashMap<String, String>,
+    keys: impl Iterator<Item = &'a str>,
+) -> HashMap<String, String> {
+    let mut keys: Vec<&str> = keys.collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let name = |k: &str| names.get(k).cloned().unwrap_or_default();
+    keys.iter()
+        .map(|k| {
+            let n = name(k);
+            let shared = keys.iter().filter(|o| name(o) == n).count() > 1;
+            let label = if !n.is_empty() && !shared {
+                n
+            } else {
+                let short: String = k.trim_start_matches("profile:").chars().take(8).collect();
+                let base = if n.is_empty() {
+                    "account".to_string()
+                } else {
+                    n
+                };
+                format!("{base} {short}")
+            };
+            (k.to_string(), label)
+        })
+        .collect()
 }
 
 /// Where one ccusage run reads: a host's own config directory, or the view of
@@ -476,6 +518,7 @@ fn sources(
     let local_default = local
         .iter()
         .find(|a| a.source)
+        .or(local.first())
         .map(accounts::Account::key)
         .unwrap_or_default();
     let mut out = Vec::new();
@@ -527,19 +570,6 @@ fn sources(
     Ok((out, names))
 }
 
-/// A file name for an account key.
-fn key_dir(key: &str) -> String {
-    key.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 /// Split a host's transcripts into one view per account, under
 /// `<cache>/views/<host>/<account>/projects/`, rebuilt on every run.
 ///
@@ -553,7 +583,7 @@ fn split(host: &Host, owners: &Owners, window_start: i64) -> Result<Vec<Source>,
     let root = store::cache_dir().join("views").join(&host.name);
     let _ = std::fs::remove_dir_all(&root);
     let keys = owners.accounts();
-    let view = |key: &str| root.join(key_dir(key));
+    let view = |key: &str| root.join(accounts::file_name(key));
     for k in &keys {
         let dir = view(k).join("projects");
         std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
@@ -624,13 +654,21 @@ fn link_or_copy(from: &Path, to: &Path) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("creating {}: {e}", parent.display()))?;
     }
-    std::fs::hard_link(from, to)
-        .or_else(|_| std::fs::copy(from, to).map(|_| ()))
-        .map_err(|e| format!("linking {} into a view: {e}", from.display()))
+    match std::fs::hard_link(from, to).or_else(|_| std::fs::copy(from, to).map(|_| ())) {
+        Ok(()) => Ok(()),
+        // Claude Code removed it since the listing: there is nothing to count.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("linking {} into a view: {e}", from.display())),
+    }
 }
 
 /// Write each account's lines of one transcript into its view. A line with no
 /// timestamp goes with the line before it.
+///
+/// Lines are handled as bytes and copied as they are, so a line Claude Code is
+/// still writing, which can end inside a multi-byte character, reaches ccusage
+/// exactly as it would have unsplit; ccusage skips what does not parse. A file
+/// removed since the listing is skipped.
 fn split_file(
     file: &Path,
     rel: &Path,
@@ -642,12 +680,15 @@ fn split_file(
     struct Stamp {
         timestamp: Option<String>,
     }
-    let text =
-        std::fs::read_to_string(file).map_err(|e| format!("reading {}: {e}", file.display()))?;
-    let mut parts: HashMap<String, String> = HashMap::new();
+    let bytes = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("reading {}: {e}", file.display())),
+    };
+    let mut parts: HashMap<String, Vec<u8>> = HashMap::new();
     let mut owner = owners.default.clone();
-    for line in text.lines() {
-        let at = serde_json::from_str::<Stamp>(line)
+    for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        let at = serde_json::from_slice::<Stamp>(line)
             .ok()
             .and_then(|s| s.timestamp)
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
@@ -656,8 +697,8 @@ fn split_file(
             owner = owners.at(session, at).to_string();
         }
         let part = parts.entry(owner.clone()).or_default();
-        part.push_str(line);
-        part.push('\n');
+        part.extend_from_slice(line);
+        part.push(b'\n');
     }
     for (account, body) in parts {
         let to = view(&account).join("projects").join(rel);
@@ -1017,6 +1058,61 @@ mod tests {
             "{\"timestamp\":\"2027-01-15T08:01:00Z\",\"n\":3}\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn splitting_keeps_bytes_as_they_are_and_skips_a_vanished_file() {
+        let dir = std::env::temp_dir().join(format!("ccmoneta-bytes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("in.jsonl");
+        // A complete line, then one cut off inside a two-byte character.
+        let body: Vec<u8> = [
+            b"{\"timestamp\":\"2027-01-15T07:59:00Z\"}\n".as_slice(),
+            b"{\"t\":\"\xc3",
+        ]
+        .concat();
+        std::fs::write(&file, &body).unwrap();
+        let owners = Owners::new("main".into());
+        let view = |k: &str| dir.join(k);
+        split_file(&file, Path::new("p/s.jsonl"), "s", &owners, &view).unwrap();
+        let out = std::fs::read(dir.join("main/projects/p/s.jsonl")).unwrap();
+        assert_eq!(out, [body.as_slice(), b"\n"].concat());
+        split_file(
+            &dir.join("gone.jsonl"),
+            Path::new("p/g.jsonl"),
+            "g",
+            &owners,
+            &view,
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accounts_are_labelled_apart_even_when_names_clash() {
+        let names: HashMap<String, String> = [
+            ("uuid-aaaa1111", "main"),
+            ("uuid-bbbb2222", "main"),
+            ("uuid-cccc3333", "work"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let l = account_labels(
+            &names,
+            [
+                "uuid-aaaa1111",
+                "uuid-bbbb2222",
+                "uuid-cccc3333",
+                "uuid-dddd4444",
+            ]
+            .into_iter(),
+        );
+        assert_eq!(l["uuid-cccc3333"], "work");
+        assert_eq!(l["uuid-aaaa1111"], "main uuid-aaa");
+        assert_eq!(l["uuid-bbbb2222"], "main uuid-bbb");
+        assert_eq!(l["uuid-dddd4444"], "account uuid-ddd");
     }
 
     #[test]

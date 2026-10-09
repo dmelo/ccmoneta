@@ -304,6 +304,12 @@ fn several_view(
             tooltip.push(format!("{name}: no limits yet"));
             continue;
         };
+        if let Some(e) = &snap.error {
+            parts.push(format!("{name} ✗"));
+            shorts.push("✗".to_string());
+            tooltip.push(format!("{titled}: {e} (via {})", snap.source));
+            continue;
+        }
         let (five, seven) = (snap.limits.five_hour, snap.limits.seven_day);
         let pct =
             |w: Option<limits::Window>| w.map_or("?".to_string(), |w| format!("{:.0}%", w.percent));
@@ -497,6 +503,7 @@ mod tests {
             },
             captured_at: NOW - age,
             source: "statusline".into(),
+            error: None,
         }
     }
 

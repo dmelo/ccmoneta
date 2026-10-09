@@ -270,6 +270,21 @@ fn limit_rows(app: &App) -> Vec<Line<'static>> {
     for a in &app.limits {
         let name = a.account.titled();
         match &a.snap {
+            Some(snap) if snap.error.is_some() => {
+                let e = snap.error.as_deref().unwrap_or_default();
+                let mut spans = Vec::new();
+                if several {
+                    spans.push(Span::styled(
+                        format!("{name}  "),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ));
+                }
+                spans.push(Span::styled(
+                    format!("{e} (via {})", snap.source),
+                    Style::default().fg(Color::Red),
+                ));
+                lines.push(Line::from(spans));
+            }
             Some(snap) => {
                 let now = store::now();
                 let age = snap.age(now);
@@ -308,7 +323,7 @@ fn limit_rows(app: &App) -> Vec<Line<'static>> {
                             format!("{name}  "),
                             Style::default().add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled("no data yet", dim),
+                        Span::styled(why, dim),
                     ]));
                 } else {
                     lines.push(Line::styled(why, dim));
@@ -383,10 +398,6 @@ fn scale_cap(daily: &[(String, f64)]) -> f64 {
     used[idx].max(0.01)
 }
 
-/// Per-host spend over the window, then, on a line of its own so the totals do
-/// not push it off a narrow pane, how old each mirrored host's copy is. A
-/// remote host's figures are only as current as its last `ccmoneta-sync`, so an
-/// old or missing sync is called out instead of silently under-counting.
 /// Spend per Claude account, when aimux runs several: over the window, or for
 /// the pinned day, labelled to match the panes below.
 fn account_line(app: &App, c: &Costs) -> Option<Line<'static>> {
@@ -413,6 +424,10 @@ fn account_line(app: &App, c: &Costs) -> Option<Line<'static>> {
     Some(Line::from(spans))
 }
 
+/// Per-host spend over the window, then, on a line of its own so the totals do
+/// not push it off a narrow pane, how old each mirrored host's copy is. A
+/// remote host's figures are only as current as its last `ccmoneta-sync`, so an
+/// old or missing sync is called out instead of silently under-counting.
 fn host_lines(c: &Costs, hosts: &[Host], days: i64) -> Vec<Line<'static>> {
     let dim = Style::default().fg(Color::DarkGray);
     let warn = Style::default().fg(Color::Yellow);
