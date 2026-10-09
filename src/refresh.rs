@@ -433,6 +433,7 @@ mod tests {
             captured_at: NOW - age,
             source: "statusline".into(),
             error: None,
+            read_at: None,
         };
         assert!(limits_poll_due(None, NOW, 900));
         assert!(!limits_poll_due(Some(&snap(899)), NOW, 900));

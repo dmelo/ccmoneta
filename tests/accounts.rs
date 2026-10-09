@@ -341,6 +341,59 @@ esac
     assert_eq!(state["failures"], 0, "{state}");
 }
 
+/// The second profile's credentials, with only the two expiry times set.
+fn credentials(sb: &Sandbox, access_in: i64, refresh_in: i64) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    fs::write(
+        sb.home().join(".aimux/profiles/second/.credentials.json"),
+        format!(
+            r#"{{"claudeAiOauth":{{"expiresAt":{},"refreshTokenExpiresAt":{}}}}}"#,
+            now_ms + access_in * 1000,
+            now_ms + refresh_in * 1000
+        ),
+    )
+    .unwrap();
+}
+
+fn second_limits(sb: &Sandbox) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(sb.cache("limits/uuid-second.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn a_lapsed_token_is_not_called_an_expired_login_and_keeps_the_last_reading() {
+    let sb = Sandbox::new("lapsed");
+    // A good reading first, then aimux's probe is refused.
+    assert!(sb.run(&["refresh", "limits", "--force"]).status.success());
+    fs::write(
+        sb.root.join("fake-aimux"),
+        r#"#!/bin/bash
+case "$1" in
+  status) printf '{"fetchedAt":%s000,"profiles":{"main":{"cli":"claude","status":{"fiveHourPct":12,"weeklyPct":34}},"second":{"cli":"claude","status":null,"error":"auth"}}}' "$(date +%s)" ;;
+esac
+"#,
+    )
+    .unwrap();
+
+    credentials(&sb, -3600, 86400 * 20);
+    assert!(sb.run(&["refresh", "limits", "--force"]).status.success());
+    let snap = second_limits(&sb);
+    let error = snap["error"].as_str().unwrap();
+    assert!(
+        error.starts_with("token expired 1h 00m ago; renews with the next second session"),
+        "{error}"
+    );
+    assert_eq!(
+        snap["limits"]["five_hour"]["percent"], 56.0,
+        "the last reading is kept"
+    );
+    assert!(snap["read_at"].as_i64().is_some(), "{snap}");
+
+    credentials(&sb, -3600, -60);
+    assert!(sb.run(&["refresh", "limits", "--force"]).status.success());
+    let error = second_limits(&sb)["error"].as_str().unwrap().to_string();
+    assert_eq!(error, "login expired: run `aimux auth login second`");
+}
+
 #[test]
 fn a_second_profile_on_the_same_account_credits_that_account() {
     let sb = Sandbox::new("folded");

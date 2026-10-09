@@ -69,6 +69,10 @@ pub struct Snapshot {
     /// failing the job, so one account's trouble does not hold back the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// With an error, when the windows kept from the last good reading were
+    /// read; `captured_at` is then when the account was last asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<i64>,
 }
 
 impl Snapshot {
@@ -202,7 +206,6 @@ pub fn from_aimux(body: &serde_json::Value) -> HashMap<String, Result<Limits, St
             })
         } else {
             Err(match p["error"].as_str() {
-                Some("auth") => "login expired".to_string(),
                 Some(e) => e.to_string(),
                 None => "no reading".to_string(),
             })
@@ -210,6 +213,30 @@ pub fn from_aimux(body: &serde_json::Value) -> HashMap<String, Result<Limits, St
         out.insert(name.clone(), result);
     }
     out
+}
+
+/// What an aimux error code means for this account, in words.
+///
+/// aimux sends the profile's access token as it is on disk and never renews
+/// it, so `auth` mostly means that token has lapsed since Claude Code last ran
+/// under the profile. That is only a login to redo when the refresh token has
+/// lapsed too; the credentials file says which.
+fn explain(code: &str, account: &Account, now: i64) -> String {
+    match code {
+        "auth" => match accounts::token_expiry(&account.config_dir) {
+            (_, Some(refresh)) if refresh <= now => {
+                format!("login expired: run `aimux auth login {}`", account.name)
+            }
+            (Some(access), _) if access <= now => format!(
+                "token expired {} ago; renews with the next {} session",
+                store::ago(now - access),
+                account.name
+            ),
+            _ => "aimux's request was refused (auth)".to_string(),
+        },
+        "unavailable" => "aimux could not reach the usage endpoint".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Run `aimux status --json`. `--max-age` lets aimux hand back a reading it
@@ -299,6 +326,7 @@ pub fn refresh(max_age: i64) -> Result<(), String> {
             captured_at: store::now(),
             source: "oauth".into(),
             error: None,
+            read_at: None,
         };
         return save_for(account, false, &snap)
             .map_err(|e| format!("writing {}: {e}", path_for(account, false).display()));
@@ -308,19 +336,32 @@ pub fn refresh(max_age: i64) -> Result<(), String> {
     let mut read = from_aimux(&body);
     let mut failed = Vec::new();
     for a in &accounts {
-        let (limits, error) = match read.remove(&a.name) {
-            Some(Ok(limits)) => (limits, None),
-            Some(Err(e)) => (Limits::default(), Some(e)),
-            None => (Limits::default(), Some("not in aimux status".to_string())),
-        };
-        if let Some(e) = &error {
-            failed.push(format!("{}: {e}", a.name));
-        }
-        let snap = Snapshot {
-            limits,
-            captured_at: at,
-            source: "aimux".into(),
-            error,
+        let snap = match read.remove(&a.name) {
+            Some(Ok(limits)) => Snapshot {
+                limits,
+                captured_at: at,
+                source: "aimux".into(),
+                error: None,
+                read_at: None,
+            },
+            failure => {
+                let why = match failure {
+                    Some(Err(code)) => explain(&code, a, store::now()),
+                    _ => "not in aimux status".to_string(),
+                };
+                failed.push(format!("{}: {why}", a.name));
+                // Keep the last windows that were read, and when, rather than
+                // blanking an account that is only waiting for a new token.
+                let last = load_for(a, true);
+                Snapshot {
+                    limits: last.as_ref().map(|s| s.limits.clone()).unwrap_or_default(),
+                    captured_at: at,
+                    source: "aimux".into(),
+                    read_at: last
+                        .and_then(|s| s.read_at.or(s.error.is_none().then_some(s.captured_at))),
+                    error: Some(why),
+                }
+            }
         };
         save_for(a, true, &snap)
             .map_err(|e| format!("writing {}: {e}", path_for(a, true).display()))?;
@@ -358,6 +399,6 @@ mod tests {
         let second = r["second"].as_ref().unwrap();
         assert!(second.five_hour.is_none());
         assert_eq!(second.seven_day.unwrap().percent, 5.0);
-        assert_eq!(r["expired"].as_ref().unwrap_err(), "login expired");
+        assert_eq!(r["expired"].as_ref().unwrap_err(), "auth");
     }
 }

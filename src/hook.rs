@@ -49,6 +49,7 @@ pub fn run(cfg: &Config) -> i32 {
                     captured_at: store::now(),
                     source: "statusline".into(),
                     error: None,
+                    read_at: None,
                 },
             );
         }

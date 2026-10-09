@@ -307,7 +307,17 @@ fn several_view(
         if let Some(e) = &snap.error {
             parts.push(format!("{name} ✗"));
             shorts.push("✗".to_string());
-            tooltip.push(format!("{titled}: {e} (via {})", snap.source));
+            tooltip.push(format!("{titled}: {e}"));
+            if let Some(read) = snap.read_at {
+                let mut last = String::from("  last read");
+                for (label, w) in [("5h", snap.limits.five_hour), ("7d", snap.limits.seven_day)] {
+                    if let Some(w) = w {
+                        last.push_str(&format!(" {label} {:.0}%", w.percent));
+                    }
+                }
+                last.push_str(&format!(", {} ago", ago(inp.now - read)));
+                tooltip.push(last);
+            }
             continue;
         }
         let (five, seven) = (snap.limits.five_hour, snap.limits.seven_day);
@@ -504,6 +514,7 @@ mod tests {
             captured_at: NOW - age,
             source: "statusline".into(),
             error: None,
+            read_at: None,
         }
     }
 

@@ -201,6 +201,21 @@ pub fn plan_label(account: &serde_json::Value) -> Option<String> {
     Some(label)
 }
 
+/// When a profile's OAuth access token and its refresh token expire, epoch
+/// seconds, from `.credentials.json`. Only the two times are read; the tokens
+/// never leave the file. The access token lives for hours and Claude Code
+/// renews it, through the refresh token, whenever it runs under the profile.
+pub fn token_expiry(config_dir: &Path) -> (Option<i64>, Option<i64>) {
+    let Ok(raw) = std::fs::read(config_dir.join(".credentials.json")) else {
+        return (None, None);
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+        return (None, None);
+    };
+    let at = |key: &str| v["claudeAiOauth"][key].as_i64().map(|ms| ms / 1000);
+    (at("expiresAt"), at("refreshTokenExpiresAt"))
+}
+
 /// An account's uuid and plan, from one read of its record.
 fn identity(config_dir: &Path) -> (Option<String>, Option<String>) {
     let Some(account) = oauth_account(config_dir) else {

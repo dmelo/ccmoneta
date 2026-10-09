@@ -272,18 +272,24 @@ fn limit_rows(app: &App) -> Vec<Line<'static>> {
         match &a.snap {
             Some(snap) if snap.error.is_some() => {
                 let e = snap.error.as_deref().unwrap_or_default();
-                let mut spans = Vec::new();
+                // The reason gets a line of its own: it is longer than the pane
+                // has room for after the name.
                 if several {
-                    spans.push(Span::styled(
-                        format!("{name}  "),
+                    lines.push(Line::styled(
+                        name.clone(),
                         Style::default().add_modifier(Modifier::BOLD),
                     ));
                 }
-                spans.push(Span::styled(
-                    format!("{e} (via {})", snap.source),
-                    Style::default().fg(Color::Red),
-                ));
-                lines.push(Line::from(spans));
+                lines.push(Line::styled(e.to_string(), Style::default().fg(Color::Red)));
+                // The last windows that were read, said to be that old.
+                if let Some(read) = snap.read_at {
+                    let now = store::now();
+                    lines.extend(window_rows(snap, app.limits_width.get(), now));
+                    lines.push(Line::styled(
+                        format!("as last read, {} ago", ago(now - read)),
+                        dim,
+                    ));
+                }
             }
             Some(snap) => {
                 let now = store::now();

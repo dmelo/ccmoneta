@@ -214,6 +214,10 @@ pub fn run(cfg: &Config, cfg_error: Option<&str>) -> i32 {
             String::new()
         };
         match limits::load_for(a, several) {
+            Some(s) if s.error.is_some() => r.warn(&format!(
+                "{label}{}",
+                s.error.as_deref().unwrap_or_default()
+            )),
             Some(s) => r.ok(&format!(
                 "{label}limits via {}, {} ago",
                 s.source,
