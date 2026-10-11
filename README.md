@@ -1,12 +1,15 @@
 # ccmoneta
 
-Named after Moneta, the Roman goddess whose temple housed Rome's mint and gave English the word *money*; her name is traditionally traced to *monere*, to warn, the root of *monitor*.
+**A Claude Code usage monitor.** See your Claude plan's 5-hour and 7-day rate limits, and what your Claude Code usage would have cost at API prices, in a terminal dashboard, in a status bar (i3blocks, swaybar, Waybar), and in Claude Code's own status line.
 
-Claude Code usage limits and spend, in the terminal, in a status bar, and in Claude Code's own status line.
+![The ccmoneta dashboard: daily spend, limits for two accounts, spend per model and per project (made-up figures)](docs/img/dashboard.svg)
 
 - **Limits:** the plan's 5-hour and 7-day usage percentages, with reset times. These come from Anthropic, through the JSON Claude Code passes to its status line, or through `GET /api/oauth/usage` when no status line has reported recently.
 - **Spend:** what the usage would have cost at API prices, today, over 7 days and over 30 days, per model, per project and per machine. [ccusage](https://github.com/ccusage/ccusage) computes it from Claude Code's transcripts; ccmoneta keeps no pricing table of its own.
 - **Health:** whether Claude is operational, from [status.claude.com](https://status.claude.com), and whether this machine's Claude Code is the newest release on its channel. Both stay out of sight until there is something to say.
+- **Several machines:** count the Claude Code usage of every machine you work on, synced over ssh and rsync (see [Counting more than one machine](#counting-more-than-one-machine)).
+- **Several accounts:** with [aimux](https://github.com/Digital-Threads/aimux), limits and spend per Claude subscription, labelled with its plan (see [Several Claude accounts](#several-claude-accounts-aimux)).
+- **Any day in detail:** pick a day in the dashboard to see its spend per model and per project.
 
 ## Three surfaces, each correct on its own
 
@@ -29,8 +32,10 @@ Use any of them, or all. Each one renders from a shared cache and, when a value 
 ## Install
 
 ```bash
-cargo install --path .
+cargo install --git https://github.com/dmelo/ccmoneta --tag v0.1.0
 ```
+
+or, from a clone, `cargo install --path .`.
 
 This installs `ccmoneta` into the `bin` folder of cargo's install root, `~/.cargo/bin` unless `CARGO_INSTALL_ROOT` or `CARGO_HOME` says otherwise; that folder needs to be on your `PATH`. Then set up whichever surfaces you want, and check the result:
 
@@ -156,6 +161,10 @@ cargo test
 ```
 
 The integration tests run the real binary against a throwaway cache, config and home, with a fake ccusage and a fake ssh, so they touch nothing of yours and need no network. The sync tests need `rsync`.
+
+## The name
+
+Moneta was the Roman goddess whose temple housed Rome's mint and gave English the word *money*; her name is traditionally traced to *monere*, to warn, the root of *monitor*.
 
 ## License
 

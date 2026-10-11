@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "Claude Code usage limits and spend in the terminal, a status bar, and Claude Code's status line"
 readme = "README.md"
+keywords = ["claude", "claude-code", "usage", "statusline", "tui"]
+categories = ["command-line-utilities", "development-tools"]
 license = "MIT"
 repository = "https://github.com/dmelo/ccmoneta"
 
