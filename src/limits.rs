@@ -10,11 +10,18 @@
 //!   **RFC 3339**. Always current, but rate-limited, so the limits job polls it
 //!   only when the cached snapshot has gone stale, and backs off on failure
 //!   (see refresh.rs).
+//!
+//! With aimux running several accounts (see accounts.rs), limits are kept per
+//! account, and the limits job reads them all from `aimux status --json`
+//! instead of the endpoint: aimux holds each profile's login and already polls
+//! them, sharing one reading between everything that asks.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
+use crate::accounts::{self, Account};
 use crate::store;
 
 /// A single usage window, normalised: `percent` is always 0-100 and
@@ -54,9 +61,18 @@ pub struct Snapshot {
     /// Epoch seconds when these numbers were captured, not when they were
     /// written, so a re-read of a cached file still ages correctly.
     pub captured_at: i64,
-    /// "statusline" or "oauth", carried through to the UI so a stale or
-    /// second-hand number can say where it came from.
+    /// "statusline", "oauth" or "aimux", carried through to the UI so a stale
+    /// or second-hand number can say where it came from.
     pub source: String,
+    /// Why this account could not be read, when it could not: aimux reports a
+    /// login that has expired, for one. Recorded on the account rather than
+    /// failing the job, so one account's trouble does not hold back the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// With an error, when the windows kept from the last good reading were
+    /// read; `captured_at` is then when the account was last asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<i64>,
 }
 
 impl Snapshot {
@@ -65,16 +81,42 @@ impl Snapshot {
     }
 }
 
-fn snapshot_path() -> PathBuf {
-    store::cache_dir().join("limits.json")
+/// One account's limits, as the surfaces show them.
+#[derive(Debug, Clone)]
+pub struct AccountLimits {
+    pub account: Account,
+    pub snap: Option<Snapshot>,
 }
 
-pub fn save(snap: &Snapshot) -> std::io::Result<()> {
-    store::write_json(&snapshot_path(), snap)
+/// Where an account's snapshot lives. A single account keeps `limits.json`,
+/// as before accounts existed; several get a file each, named by account key.
+fn path_for(account: &Account, several: bool) -> PathBuf {
+    if !several {
+        return store::cache_dir().join("limits.json");
+    }
+    store::cache_dir()
+        .join("limits")
+        .join(format!("{}.json", account.file_name()))
 }
 
-pub fn load() -> Option<Snapshot> {
-    store::read_json(&snapshot_path())
+pub fn save_for(account: &Account, several: bool, snap: &Snapshot) -> std::io::Result<()> {
+    store::write_json(&path_for(account, several), snap)
+}
+
+pub fn load_for(account: &Account, several: bool) -> Option<Snapshot> {
+    store::read_json(&path_for(account, several))
+}
+
+/// Every account's cached limits, in `accounts::local()` order.
+pub fn load_all(accounts: &[Account]) -> Vec<AccountLimits> {
+    let several = accounts::several(accounts);
+    accounts
+        .iter()
+        .map(|a| AccountLimits {
+            account: a.clone(),
+            snap: load_for(a, several),
+        })
+        .collect()
 }
 
 /// Parse the `rate_limits` object out of a statusLine payload.
@@ -129,6 +171,100 @@ pub fn from_oauth(body: &serde_json::Value) -> Limits {
     }
 }
 
+/// `CCMONETA_AIMUX` replaces the aimux executable, for the tests.
+pub fn aimux_exe() -> std::ffi::OsString {
+    std::env::var_os("CCMONETA_AIMUX")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "aimux".into())
+}
+
+/// Read `aimux status --json`: per profile, its windows or why there are none.
+/// Percentages are 0-100 and reset times epoch milliseconds; a window aimux
+/// could not read is null.
+pub fn from_aimux(body: &serde_json::Value) -> HashMap<String, Result<Limits, String>> {
+    let mut out = HashMap::new();
+    let Some(profiles) = body["profiles"].as_object() else {
+        return out;
+    };
+    for (name, p) in profiles {
+        if p["cli"].as_str().is_some_and(|c| c != "claude") {
+            continue;
+        }
+        let st = &p["status"];
+        let result = if st.is_object() {
+            let win = |pct: &str, reset: &str| -> Option<Window> {
+                Some(Window {
+                    percent: st[pct].as_f64()?,
+                    resets_at: st[reset].as_i64().map(|ms| ms / 1000),
+                })
+            };
+            Ok(Limits {
+                five_hour: win("fiveHourPct", "fiveHourResetsAt"),
+                seven_day: win("weeklyPct", "weeklyResetsAt"),
+                seven_day_opus: None,
+                spend_percent: None,
+            })
+        } else {
+            Err(match p["error"].as_str() {
+                Some(e) => e.to_string(),
+                None => "no reading".to_string(),
+            })
+        };
+        out.insert(name.clone(), result);
+    }
+    out
+}
+
+/// What an aimux error code means for this account, in words.
+///
+/// aimux sends the profile's access token as it is on disk and never renews
+/// it, so `auth` mostly means that token has lapsed since Claude Code last ran
+/// under the profile. That is only a login to redo when the refresh token has
+/// lapsed too; the credentials file says which.
+fn explain(code: &str, account: &Account, now: i64) -> String {
+    match code {
+        "auth" => match accounts::token_expiry(&account.config_dir) {
+            (_, Some(refresh)) if refresh <= now => {
+                format!("login expired: run `aimux auth login {}`", account.name)
+            }
+            (Some(access), _) if access <= now => format!(
+                "token expired {} ago; renews with the next {} session",
+                store::ago(now - access),
+                account.name
+            ),
+            _ => "aimux's request was refused (auth)".to_string(),
+        },
+        "unavailable" => "aimux could not reach the usage endpoint".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Run `aimux status --json`. `--max-age` lets aimux hand back a reading it
+/// took for someone else within that many seconds instead of probing again.
+fn fetch_aimux(max_age: i64) -> Result<(serde_json::Value, i64), String> {
+    let out = Command::new(aimux_exe())
+        .args(["status", "--json", "--max-age", &max_age.to_string()])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "aimux not found, though ~/.aimux/config.yaml lists several accounts".to_string()
+            } else {
+                format!("aimux: {e}")
+            }
+        })?;
+    if !out.status.success() {
+        return Err(format!("aimux status exited {}", out.status));
+    }
+    let body: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("aimux status: bad JSON: {e}"))?;
+    let at = body["fetchedAt"]
+        .as_i64()
+        .map(|ms| ms / 1000)
+        .unwrap_or_else(store::now);
+    Ok((body, at))
+}
+
 /// Whether the usage endpoint can be polled at all, without exposing the token.
 pub fn has_oauth_token() -> bool {
     oauth_token().is_some_and(|t| !t.is_empty())
@@ -172,13 +308,97 @@ pub fn fetch_oauth() -> Result<Limits, String> {
     Ok(from_oauth(&body))
 }
 
-/// The limits job: poll the endpoint and cache the result.
-pub fn refresh() -> Result<(), String> {
-    let limits = fetch_oauth()?;
-    save(&Snapshot {
-        limits,
-        captured_at: store::now(),
-        source: "oauth".into(),
-    })
-    .map_err(|e| format!("writing {}: {e}", snapshot_path().display()))
+/// The limits job: read every account's limits and cache them.
+///
+/// One account polls the usage endpoint itself. Several are read through aimux,
+/// which holds their logins. An account aimux could not read is saved with the
+/// reason, so it is shown and not asked about again until it is due like the
+/// others; the job fails only when no account could be read at all.
+///
+/// `max_age` is the limits' own threshold: aimux may hand back a reading it
+/// took earlier, and one older than that would be due again on arrival.
+pub fn refresh(max_age: i64) -> Result<(), String> {
+    let accounts = accounts::local();
+    if !accounts::several(&accounts) {
+        let account = &accounts[0];
+        let snap = Snapshot {
+            limits: fetch_oauth()?,
+            captured_at: store::now(),
+            source: "oauth".into(),
+            error: None,
+            read_at: None,
+        };
+        return save_for(account, false, &snap)
+            .map_err(|e| format!("writing {}: {e}", path_for(account, false).display()));
+    }
+
+    let (body, at) = fetch_aimux((max_age / 2).clamp(0, 120))?;
+    let mut read = from_aimux(&body);
+    let mut failed = Vec::new();
+    for a in &accounts {
+        let snap = match read.remove(&a.name) {
+            Some(Ok(limits)) => Snapshot {
+                limits,
+                captured_at: at,
+                source: "aimux".into(),
+                error: None,
+                read_at: None,
+            },
+            failure => {
+                let why = match failure {
+                    Some(Err(code)) => explain(&code, a, store::now()),
+                    _ => "not in aimux status".to_string(),
+                };
+                failed.push(format!("{}: {why}", a.name));
+                // Keep the last windows that were read, and when, rather than
+                // blanking an account that is only waiting for a new token.
+                let last = load_for(a, true);
+                Snapshot {
+                    limits: last.as_ref().map(|s| s.limits.clone()).unwrap_or_default(),
+                    captured_at: at,
+                    source: "aimux".into(),
+                    read_at: last
+                        .and_then(|s| s.read_at.or(s.error.is_none().then_some(s.captured_at))),
+                    error: Some(why),
+                }
+            }
+        };
+        save_for(a, true, &snap)
+            .map_err(|e| format!("writing {}: {e}", path_for(a, true).display()))?;
+    }
+    if failed.len() == accounts.len() {
+        Err(failed.join("; "))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aimux_status_reads_per_profile() {
+        let body = serde_json::json!({
+            "fetchedAt": 1_800_000_000_000_i64,
+            "profiles": {
+                "main": {"cli": "claude", "status": {"fiveHourPct": 12, "weeklyPct": 40,
+                    "fiveHourResetsAt": 1_800_003_600_000_i64, "weeklyResetsAt": 1_800_300_000_000_i64,
+                    "status": "allowed"}},
+                "second": {"cli": "claude", "status": {"fiveHourPct": null, "weeklyPct": 5}},
+                "expired": {"cli": "claude", "status": null, "error": "auth"},
+                "coder": {"cli": "codex", "status": {"fiveHourPct": 1, "weeklyPct": 1}}
+            }
+        });
+        let r = from_aimux(&body);
+        assert_eq!(r.len(), 3, "codex profiles are not Claude accounts");
+        let main = r["main"].as_ref().unwrap();
+        assert_eq!(main.five_hour.unwrap().percent, 12.0);
+        assert_eq!(main.five_hour.unwrap().resets_at, Some(1_800_003_600));
+        assert_eq!(main.seven_day.unwrap().percent, 40.0);
+        let second = r["second"].as_ref().unwrap();
+        assert!(second.five_hour.is_none());
+        assert_eq!(second.seven_day.unwrap().percent, 5.0);
+        assert_eq!(r["expired"].as_ref().unwrap_err(), "auth");
+    }
 }

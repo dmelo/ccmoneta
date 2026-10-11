@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::config::{self, Config};
 use crate::store::{self, Job, ago};
-use crate::{cost, health, install, limits, sync};
+use crate::{accounts, cost, health, install, limits, sync};
 
 struct Report {
     failed: bool,
@@ -178,13 +178,60 @@ pub fn run(cfg: &Config, cfg_error: Option<&str>) -> i32 {
     job_line(&r, Job::Cost, now);
 
     println!("limits");
-    match limits::load() {
-        Some(s) => r.ok(&format!("limits via {}, {} ago", s.source, ago(s.age(now)))),
-        None => r.warn(
-            "no limits cached yet; they arrive with the next Claude Code turn, or from the usage endpoint",
-        ),
+    let accts = accounts::local();
+    let several = accounts::several(&accts);
+    if several {
+        let names: Vec<&str> = accts.iter().map(|a| a.name.as_str()).collect();
+        r.ok(&format!(
+            "aimux: {} accounts ({}); spend and limits are kept per account",
+            accts.len(),
+            names.join(", ")
+        ));
+        match version_of(limits::aimux_exe(), "--version") {
+            Ok(v) => r.ok(&format!("aimux {v}, for reading every account's limits")),
+            Err(e) => r.fail(&format!(
+                "aimux: {e}; without it only the status line updates limits, one account at a time"
+            )),
+        }
+        for a in &accts {
+            if a.uuid.is_none() {
+                r.warn(&format!(
+                    "{}: no account in {}/.claude.json; is it logged in? Its spend goes to {}",
+                    a.name,
+                    a.config_dir.display(),
+                    accts
+                        .iter()
+                        .find(|x| x.source)
+                        .map_or("the source", |x| x.name.as_str())
+                ));
+            }
+        }
     }
-    if limits::has_oauth_token() {
+    for a in &accts {
+        let label = if several {
+            format!("{}: ", a.titled())
+        } else {
+            String::new()
+        };
+        match limits::load_for(a, several) {
+            Some(s) if s.error.is_some() => r.warn(&format!(
+                "{label}{}",
+                s.error.as_deref().unwrap_or_default()
+            )),
+            Some(s) => r.ok(&format!(
+                "{label}limits via {}, {} ago",
+                s.source,
+                ago(s.age(now))
+            )),
+            None => r.warn(&format!(
+                "{label}no limits cached yet; they arrive with the next Claude Code turn, or from {}",
+                if several { "aimux" } else { "the usage endpoint" }
+            )),
+        }
+    }
+    if several {
+        // aimux holds every login; ccmoneta's own endpoint poll is not used.
+    } else if limits::has_oauth_token() {
         r.ok("Claude OAuth credentials found, for polling the usage endpoint");
     } else {
         r.warn(

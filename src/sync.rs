@@ -4,13 +4,20 @@
 //! over ssh, fetch them with `rsync --files-from`, then delete local copies no
 //! longer in that list. The copy lives in `<cache>/hosts/<name>/`, where cost.rs
 //! finds it. See docs/design.md.
+//!
+//! Each sync also records which of the host's Claude accounts ran each session,
+//! in `markers.tsv` (see accounts::REMOTE_MARKERS), so its spend can be split
+//! per account like this machine's. That takes a second ssh command, and only
+//! for a host read from the default `~/.claude/projects`.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::accounts;
 use crate::config::{self, Config, HostConfig};
 use crate::store::{self, Job};
 
@@ -250,6 +257,17 @@ pub fn sync_target(t: &Target, days: i64) -> Result<Report, String> {
     let result = fetch_and_prune(t, days, &dir, &dest);
     match &result {
         Ok(_) => {
+            // Best-effort: without it the host's spend all goes to one
+            // account, as it did before accounts, which is no reason to call
+            // the transcript sync failed. The listing reads `~/.claude` and
+            // aimux's profiles, so a host whose transcripts come from another
+            // directory would be credited by somebody else's markers: it gets
+            // none, and any left from before are removed.
+            if t.remote_dir != DEFAULT_REMOTE_DIR {
+                let _ = fs::remove_file(dir.join("markers.tsv"));
+            } else if let Err(e) = fetch_markers(t, &dir) {
+                store::log(&format!("account markers from {}: {e}", t.name));
+            }
             let _ = store::write_text(&dir.join("last-sync"), &store::now().to_string());
             let _ = fs::remove_file(dir.join("last-error"));
         }
@@ -258,6 +276,42 @@ pub fn sync_target(t: &Target, days: i64) -> Result<Report, String> {
         }
     }
     result
+}
+
+/// Where a host's account markers are kept.
+pub fn markers_path(name: &str) -> PathBuf {
+    host_dir(name).join("markers.tsv")
+}
+
+/// Run `accounts::REMOTE_MARKERS` on the host and keep its output. The script
+/// goes in on stdin to a POSIX `sh`, since the login shell may be zsh, whose
+/// globbing differs. Output naming no account replaces nothing.
+fn fetch_markers(t: &Target, dir: &Path) -> Result<(), String> {
+    let mut child = Command::new(ssh_program())
+        .args(SSH_OPTS)
+        .arg(&t.ssh)
+        .arg("sh -s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("running ssh: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(accounts::REMOTE_MARKERS.as_bytes())
+            .map_err(|e| format!("sending the listing script: {e}"))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("running ssh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{}{}", out.status, last_line(&out.stderr)));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !text.lines().any(|l| l.starts_with("@\t")) {
+        return Err("the listing named no account".into());
+    }
+    store::write_text(&dir.join("markers.tsv"), &text).map_err(|e| format!("writing: {e}"))
 }
 
 fn fetch_and_prune(t: &Target, days: i64, dir: &Path, dest: &Path) -> Result<Report, String> {
