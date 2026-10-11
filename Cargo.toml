@@ -6,6 +6,8 @@ description = "Claude Code usage limits and spend in the terminal, a status bar,
 readme = "README.md"
 keywords = ["claude", "claude-code", "usage", "statusline", "tui"]
 categories = ["command-line-utilities", "development-tools"]
+# The crate is the program and its docs; the repo's CI and agent notes stay on GitHub.
+exclude = [".github/", "CLAUDE.md"]
 license = "MIT"
 repository = "https://github.com/dmelo/ccmoneta"
 
