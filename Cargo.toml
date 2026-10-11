@@ -1,6 +1,6 @@
 [package]
 name = "ccmoneta"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Claude Code usage limits and spend in the terminal, a status bar, and Claude Code's status line"
 readme = "README.md"
