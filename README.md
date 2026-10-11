@@ -32,7 +32,7 @@ Use any of them, or all. Each one renders from a shared cache and, when a value 
 ## Install
 
 ```bash
-cargo install --git https://github.com/dmelo/ccmoneta --tag v0.1.0
+cargo install --git https://github.com/dmelo/ccmoneta --tag v0.1.1
 ```
 
 or, from a clone, `cargo install --path .`.
