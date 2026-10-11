@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1019" height="606" viewBox="0 0 1019 606" font-family="'DejaVu Sans Mono', Menlo, Consolas, monospace" font-size="14">
+<rect width="100%" height="100%" rx="8" fill="#282a36"/>
+<text x="14.0" y="27.3" fill="#f8f8f2" textLength="991.2" lengthAdjust="spacingAndGlyphs">┌&#160;spend&#160;────────────────────────────────────────────────────────┐┌&#160;limits&#160;───────────────────────────────────────────┐</text>
+<text x="14.0" y="44.3" fill="#f8f8f2" textLength="58.8" lengthAdjust="spacingAndGlyphs">│today&#160;</text>
+<text x="72.8" y="44.3" fill="#f8f8f2" font-weight="bold" textLength="50.4" lengthAdjust="spacingAndGlyphs">$63.18</text>
+<text x="123.2" y="44.3" fill="#f8f8f2" textLength="50.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;7d&#160;</text>
+<text x="173.6" y="44.3" fill="#f8f8f2" font-weight="bold" textLength="58.8" lengthAdjust="spacingAndGlyphs">$452.93</text>
+<text x="232.4" y="44.3" fill="#f8f8f2" textLength="58.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;30d&#160;</text>
+<text x="291.2" y="44.3" fill="#f8f8f2" font-weight="bold" textLength="67.2" lengthAdjust="spacingAndGlyphs">$1910.01</text>
+<text x="358.4" y="44.3" fill="#f8f8f2" textLength="210.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;││</text>
+<text x="568.4" y="44.3" fill="#f8f8f2" font-weight="bold" textLength="134.4" lengthAdjust="spacingAndGlyphs">main&#160;(Max&#160;20x)&#160;&#160;</text>
+<text x="702.8" y="44.3" fill="#6272a4" textLength="176.4" lengthAdjust="spacingAndGlyphs">via&#160;statusline&#160;·&#160;live</text>
+<text x="879.2" y="44.3" fill="#f8f8f2" textLength="126.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="61.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="61.3" fill="#6272a4" textLength="42.0" lengthAdjust="spacingAndGlyphs">30d&#160;&#160;</text>
+<text x="64.4" y="61.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">desk&#160;$1222.41</text>
+<text x="173.6" y="61.3" fill="#6272a4" textLength="25.2" lengthAdjust="spacingAndGlyphs">&#160;·&#160;</text>
+<text x="198.8" y="61.3" fill="#f8f8f2" textLength="411.6" lengthAdjust="spacingAndGlyphs">laptop&#160;$687.60&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;││5h&#160;&#160;&#160;</text>
+<rect x="610.4" y="50.0" width="73.5" height="13.0" fill="#50fa7b" fill-opacity="1"/>
+<rect x="686.0" y="50.0" width="117.6" height="13.0" fill="#6272a4" fill-opacity="0.25"/>
+<text x="803.6" y="61.3" fill="#50fa7b" font-weight="bold" textLength="42.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;38%</text>
+<text x="845.6" y="61.3" fill="#bfbfbf" textLength="126.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;resets&#160;2h&#160;13m</text>
+<text x="971.6" y="61.3" fill="#f8f8f2" textLength="33.6" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;│</text>
+<text x="14.0" y="78.3" fill="#f8f8f2" textLength="50.4" lengthAdjust="spacingAndGlyphs">│&#160;&#160;&#160;&#160;&#160;</text>
+<text x="64.4" y="78.3" fill="#6272a4" textLength="168.0" lengthAdjust="spacingAndGlyphs">laptop&#160;synced&#160;4m&#160;ago</text>
+<text x="232.4" y="78.3" fill="#f8f8f2" textLength="378.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;││7d&#160;&#160;&#160;</text>
+<rect x="610.4" y="67.0" width="117.6" height="13.0" fill="#f1fa8c" fill-opacity="1"/>
+<rect x="728.0" y="67.0" width="75.6" height="13.0" fill="#6272a4" fill-opacity="0.25"/>
+<text x="803.6" y="78.3" fill="#f1fa8c" font-weight="bold" textLength="42.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;61%</text>
+<text x="845.6" y="78.3" fill="#bfbfbf" textLength="117.6" lengthAdjust="spacingAndGlyphs">&#160;&#160;resets&#160;3d&#160;4h</text>
+<text x="963.2" y="78.3" fill="#f8f8f2" textLength="42.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="95.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="95.3" fill="#6272a4" textLength="42.0" lengthAdjust="spacingAndGlyphs">30d&#160;&#160;</text>
+<text x="64.4" y="95.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">main&#160;$1489.81</text>
+<text x="173.6" y="95.3" fill="#6272a4" textLength="25.2" lengthAdjust="spacingAndGlyphs">&#160;·&#160;</text>
+<text x="198.8" y="95.3" fill="#f8f8f2" textLength="369.6" lengthAdjust="spacingAndGlyphs">work&#160;$420.20&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;││</text>
+<text x="568.4" y="95.3" fill="#f8f8f2" font-weight="bold" textLength="126.0" lengthAdjust="spacingAndGlyphs">work&#160;(Max&#160;5x)&#160;&#160;</text>
+<text x="694.4" y="95.3" fill="#6272a4" textLength="134.4" lengthAdjust="spacingAndGlyphs">via&#160;aimux&#160;·&#160;live</text>
+<text x="828.8" y="95.3" fill="#f8f8f2" textLength="176.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="112.3" fill="#f8f8f2" textLength="596.4" lengthAdjust="spacingAndGlyphs">│&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;││5h&#160;&#160;&#160;</text>
+<rect x="610.4" y="101.0" width="23.1" height="13.0" fill="#50fa7b" fill-opacity="1"/>
+<rect x="635.6" y="101.0" width="168.0" height="13.0" fill="#6272a4" fill-opacity="0.25"/>
+<text x="803.6" y="112.3" fill="#50fa7b" font-weight="bold" textLength="42.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;12%</text>
+<text x="845.6" y="112.3" fill="#bfbfbf" textLength="126.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;resets&#160;4h&#160;40m</text>
+<text x="971.6" y="112.3" fill="#f8f8f2" textLength="33.6" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;│</text>
+<text x="14.0" y="129.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="22.4" y="116.0" width="84.0" height="17.0" fill="#6272a4"/>
+<text x="22.4" y="129.3" fill="#282a36" font-weight="bold" textLength="84.0" lengthAdjust="spacingAndGlyphs">Oct&#160;11&#160;Sun</text>
+<text x="106.4" y="129.3" fill="#f8f8f2" textLength="16.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;</text>
+<rect x="123.2" y="118.0" width="161.7" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="291.2" y="129.3" fill="#f8f8f2" textLength="319.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$63.18││7d&#160;&#160;&#160;</text>
+<rect x="610.4" y="118.0" width="52.5" height="13.0" fill="#50fa7b" fill-opacity="1"/>
+<rect x="669.2" y="118.0" width="134.4" height="13.0" fill="#6272a4" fill-opacity="0.25"/>
+<text x="803.6" y="129.3" fill="#50fa7b" font-weight="bold" textLength="42.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;27%</text>
+<text x="845.6" y="129.3" fill="#bfbfbf" textLength="117.6" lengthAdjust="spacingAndGlyphs">&#160;&#160;resets&#160;5d&#160;1h</text>
+<text x="963.2" y="129.3" fill="#f8f8f2" textLength="42.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="146.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="146.3" fill="#6272a4" textLength="84.0" lengthAdjust="spacingAndGlyphs">Oct&#160;10&#160;Sat</text>
+<text x="106.4" y="146.3" fill="#f8f8f2" textLength="16.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;</text>
+<rect x="123.2" y="135.0" width="22.1" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="148.4" y="146.3" fill="#f8f8f2" textLength="856.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$8.64│└───────────────────────────────────────────────────┘</text>
+<text x="14.0" y="163.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Oct&#160;09&#160;Fri&#160;&#160;</text>
+<rect x="123.2" y="152.0" width="336.0" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="459.2" y="163.3" fill="#f8f8f2" textLength="546.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;$131.04│┌&#160;models&#160;───────────────────────────────────────────┐</text>
+<text x="14.0" y="180.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Oct&#160;08&#160;Thu&#160;&#160;</text>
+<rect x="123.2" y="169.0" width="188.0" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="316.4" y="180.3" fill="#f8f8f2" textLength="688.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$73.17││opus-5-5&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;709.7M&#160;&#160;$1356.11&#160;&#160;&#160;71%&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="197.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Oct&#160;07&#160;Wed&#160;&#160;</text>
+<rect x="123.2" y="186.0" width="132.3" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="257.6" y="197.3" fill="#f8f8f2" textLength="747.6" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$51.43││sonnet-5-5&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;189.9M&#160;&#160;&#160;$362.90&#160;&#160;&#160;19%&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="214.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Oct&#160;06&#160;Tue&#160;&#160;</text>
+<rect x="123.2" y="203.0" width="139.7" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="266.0" y="214.3" fill="#f8f8f2" textLength="739.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$54.45││opus-5&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;70.0M&#160;&#160;&#160;$133.70&#160;&#160;&#160;&#160;7%&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="231.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Oct&#160;05&#160;Mon&#160;&#160;</text>
+<rect x="123.2" y="220.0" width="181.7" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="308.0" y="231.3" fill="#f8f8f2" textLength="697.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$71.02││haiku-4-5&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;30.0M&#160;&#160;&#160;&#160;$57.30&#160;&#160;&#160;&#160;3%&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="248.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="248.3" fill="#6272a4" textLength="84.0" lengthAdjust="spacingAndGlyphs">Oct&#160;04&#160;Sun</text>
+<text x="106.4" y="248.3" fill="#f8f8f2" textLength="16.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;</text>
+<rect x="123.2" y="237.0" width="51.4" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="182.0" y="248.3" fill="#f8f8f2" textLength="386.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$20.02││</text>
+<text x="568.4" y="248.3" fill="#6272a4" textLength="218.4" lengthAdjust="spacingAndGlyphs">cache&#160;read&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;993.2M</text>
+<text x="786.8" y="248.3" fill="#f8f8f2" textLength="218.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="265.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="265.3" fill="#6272a4" textLength="84.0" lengthAdjust="spacingAndGlyphs">Oct&#160;03&#160;Sat</text>
+<text x="106.4" y="265.3" fill="#f8f8f2" textLength="16.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;</text>
+<rect x="123.2" y="254.0" width="16.8" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="140.0" y="265.3" fill="#f8f8f2" textLength="865.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$6.38│└───────────────────────────────────────────────────┘</text>
+<text x="14.0" y="282.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Oct&#160;02&#160;Fri&#160;&#160;</text>
+<rect x="123.2" y="271.0" width="327.6" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="450.8" y="282.3" fill="#f1fa8c" textLength="8.4" lengthAdjust="spacingAndGlyphs">▶</text>
+<text x="459.2" y="282.3" fill="#f1fa8c" font-weight="bold" textLength="92.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;$149.29</text>
+<text x="551.6" y="282.3" fill="#f8f8f2" textLength="453.6" lengthAdjust="spacingAndGlyphs">│┌&#160;projects&#160;─────────────────────────────────────────┐</text>
+<text x="14.0" y="299.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Oct&#160;01&#160;Thu&#160;&#160;</text>
+<rect x="123.2" y="288.0" width="213.2" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="341.6" y="299.3" fill="#f8f8f2" textLength="529.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$83.22││code/webapp&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$783.10</text>
+<text x="870.8" y="299.3" fill="#6272a4" textLength="109.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;desk+laptop</text>
+<text x="980.0" y="299.3" fill="#f8f8f2" textLength="25.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;│</text>
+<text x="14.0" y="316.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;30&#160;Wed&#160;&#160;</text>
+<rect x="123.2" y="305.0" width="265.7" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="392.0" y="316.3" fill="#f8f8f2" textLength="478.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$103.79││code/api&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$515.70</text>
+<text x="870.8" y="316.3" fill="#6272a4" textLength="50.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;desk</text>
+<text x="921.2" y="316.3" fill="#f8f8f2" textLength="84.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="333.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;29&#160;Tue&#160;&#160;</text>
+<rect x="123.2" y="322.0" width="327.6" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="450.8" y="333.3" fill="#f1fa8c" textLength="8.4" lengthAdjust="spacingAndGlyphs">▶</text>
+<text x="459.2" y="333.3" fill="#f1fa8c" font-weight="bold" textLength="92.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;$146.04</text>
+<text x="551.6" y="333.3" fill="#f8f8f2" textLength="319.2" lengthAdjust="spacingAndGlyphs">││code/infra&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$305.60</text>
+<text x="870.8" y="333.3" fill="#6272a4" textLength="67.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;laptop</text>
+<text x="938.0" y="333.3" fill="#f8f8f2" textLength="67.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="350.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;28&#160;Mon&#160;&#160;</text>
+<rect x="123.2" y="339.0" width="280.4" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="408.8" y="350.3" fill="#f8f8f2" textLength="462.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$109.53││notes/research&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$191.00</text>
+<text x="870.8" y="350.3" fill="#6272a4" textLength="50.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;desk</text>
+<text x="921.2" y="350.3" fill="#f8f8f2" textLength="84.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="367.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="367.3" fill="#6272a4" textLength="84.0" lengthAdjust="spacingAndGlyphs">Sep&#160;27&#160;Sun</text>
+<text x="106.4" y="367.3" fill="#f8f8f2" textLength="16.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;</text>
+<rect x="123.2" y="356.0" width="24.2" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="148.4" y="367.3" fill="#f8f8f2" textLength="722.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$9.35││code/cli&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$114.60</text>
+<text x="870.8" y="367.3" fill="#6272a4" textLength="109.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;desk+laptop</text>
+<text x="980.0" y="367.3" fill="#f8f8f2" textLength="25.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;│</text>
+<text x="14.0" y="384.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="384.3" fill="#6272a4" textLength="84.0" lengthAdjust="spacingAndGlyphs">Sep&#160;26&#160;Sat</text>
+<text x="106.4" y="384.3" fill="#f8f8f2" textLength="16.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;</text>
+<rect x="123.2" y="373.0" width="20.0" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="148.4" y="384.3" fill="#f8f8f2" textLength="856.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$7.68││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="401.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;25&#160;Fri&#160;&#160;</text>
+<rect x="123.2" y="390.0" width="327.6" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="450.8" y="401.3" fill="#f1fa8c" textLength="8.4" lengthAdjust="spacingAndGlyphs">▶</text>
+<text x="459.2" y="401.3" fill="#f1fa8c" font-weight="bold" textLength="92.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;$132.26</text>
+<text x="551.6" y="401.3" fill="#f8f8f2" textLength="453.6" lengthAdjust="spacingAndGlyphs">││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="418.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;24&#160;Thu&#160;&#160;</text>
+<rect x="123.2" y="407.0" width="221.6" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="350.0" y="418.3" fill="#f8f8f2" textLength="655.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$86.40││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="435.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;23&#160;Wed&#160;&#160;</text>
+<rect x="123.2" y="424.0" width="123.9" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="249.2" y="435.3" fill="#f8f8f2" textLength="756.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$48.34││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="452.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;22&#160;Tue&#160;&#160;</text>
+<rect x="123.2" y="441.0" width="117.6" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="240.8" y="452.3" fill="#f8f8f2" textLength="764.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$45.96││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="469.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;21&#160;Mon&#160;&#160;</text>
+<rect x="123.2" y="458.0" width="224.7" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="350.0" y="469.3" fill="#f8f8f2" textLength="655.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$87.44││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="486.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="486.3" fill="#6272a4" textLength="84.0" lengthAdjust="spacingAndGlyphs">Sep&#160;20&#160;Sun</text>
+<text x="106.4" y="486.3" fill="#f8f8f2" textLength="16.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;</text>
+<rect x="123.2" y="475.0" width="15.8" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="140.0" y="486.3" fill="#f8f8f2" textLength="865.2" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$6.23││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="503.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="503.3" fill="#6272a4" textLength="84.0" lengthAdjust="spacingAndGlyphs">Sep&#160;19&#160;Sat</text>
+<text x="106.4" y="503.3" fill="#f8f8f2" textLength="16.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;</text>
+<rect x="123.2" y="492.0" width="35.7" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="165.2" y="503.3" fill="#f8f8f2" textLength="840.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$14.12││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="520.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;18&#160;Fri&#160;&#160;</text>
+<rect x="123.2" y="509.0" width="114.5" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="240.8" y="520.3" fill="#f8f8f2" textLength="764.4" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$44.61││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="537.3" fill="#f8f8f2" textLength="109.2" lengthAdjust="spacingAndGlyphs">│Sep&#160;17&#160;Thu&#160;&#160;</text>
+<rect x="123.2" y="526.0" width="204.8" height="13.0" fill="#8be9fd" fill-opacity="1"/>
+<text x="333.2" y="537.3" fill="#f8f8f2" textLength="672.0" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;$79.69││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="554.3" fill="#f8f8f2" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="22.4" y="554.3" fill="#6272a4" textLength="126.0" lengthAdjust="spacingAndGlyphs">days&#160;1–25&#160;of&#160;30</text>
+<text x="148.4" y="554.3" fill="#f8f8f2" textLength="856.8" lengthAdjust="spacingAndGlyphs">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;││&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;│</text>
+<text x="14.0" y="571.3" fill="#f8f8f2" textLength="991.2" lengthAdjust="spacingAndGlyphs">└───────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────┘</text>
+<text x="14.0" y="588.3" fill="#6272a4" textLength="470.4" lengthAdjust="spacingAndGlyphs">q&#160;quit&#160;·&#160;r&#160;refresh&#160;·&#160;↑↓&#160;enter/click&#160;a&#160;day&#160;·&#160;spend&#160;0m&#160;old</text>
+</svg>
