@@ -1,0 +1,82 @@
+name: Release binaries
+
+# Attaches prebuilt Linux binaries to a GitHub release. Runs when a release is
+# published, and by hand for a release that already exists (give its tag).
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and attach binaries to, e.g. v0.1.0"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.event.release.tag_name }}
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    # Each architecture builds on its own kind of runner, so there is no
+    # cross-compiling toolchain to trust or maintain.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      # musl links statically: the binary runs on any Linux of its
+      # architecture, whatever C library the system has.
+      - name: Install stable and the musl target
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+          rustup update --no-self-update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          rustc --version
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # A binary whose version is not the tag's would be published under the
+      # wrong name, so it stops here instead.
+      - name: The binary is the tagged version, and static
+        run: |
+          bin=target/${{ matrix.target }}/release/ccmoneta
+          got=$("$bin" version)
+          want="ccmoneta ${TAG#v}"
+          if [ "$got" != "$want" ]; then
+            echo "::error::binary says '$got', tag says '$want'"
+            exit 1
+          fi
+          file "$bin"
+          if ldd "$bin" 2>&1 | grep -q '=>'; then
+            echo "::error::$bin links shared libraries"
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          name=ccmoneta-${TAG}-${{ matrix.target }}
+          mkdir "$name"
+          cp target/${{ matrix.target }}/release/ccmoneta README.md LICENSE "$name"/
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
