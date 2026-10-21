@@ -137,7 +137,7 @@ Under `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`:
 | `limits.json` | The latest limit windows, and where they came from; with several aimux accounts, `limits/<account>.json` instead |
 | `health.json` | Claude's service status and the installed-vs-published Claude Code version |
 | `hosts/<name>/` | A mirrored machine's transcripts, with `last-sync`, `last-attempt`, `last-error` and `markers.tsv` (which of its accounts ran each session) |
-| `views/` | Each account's part of each machine's transcripts, rebuilt on every spend refresh; almost all hard links, so it takes next to no space |
+| `views/` | Each account's part of each machine's transcripts: hard links where a transcript belongs to one account, so they take next to no space, and split copies where it belongs to several. Kept between refreshes, so only transcripts that changed are touched |
 | `jobs/` | Each refresh job's last attempt, failures and backoff |
 | `refresh.log` | One line per background refresh, and a note when a cache file does not read |
 
