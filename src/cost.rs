@@ -543,6 +543,8 @@ fn sources(
             accounts::local_owners(&local)
         };
         if owners.accounts().len() <= 1 {
+            // Views from when it was split would only hold on to disk space.
+            let _ = std::fs::remove_dir_all(store::cache_dir().join("views").join(&host.name));
             out.push(Source {
                 host: host.name.clone(),
                 account: owners.default.clone(),
@@ -571,31 +573,79 @@ fn sources(
 }
 
 /// Split a host's transcripts into one view per account, under
-/// `<cache>/views/<host>/<account>/projects/`, rebuilt on every run.
-///
-/// A session only the default account ran is hard-linked whole into that
-/// account's view; ccusage ignores symlinks, and a hard link costs nothing on
-/// the same filesystem (it is copied otherwise). A session another account had
-/// a hand in is split line by line, each line going to the account that ran it
-/// at its timestamp (see accounts::Owners). Transcripts last written before the
-/// window cannot hold any of its usage, so they are left out.
+/// `<cache>/views/<host>/<account>/projects/`. See `split_into`.
 fn split(host: &Host, owners: &Owners, window_start: i64) -> Result<Vec<Source>, String> {
     let root = store::cache_dir().join("views").join(&host.name);
-    let _ = std::fs::remove_dir_all(&root);
+    let projects = host.config_dir.join("projects");
+    let keys = split_into(&root, &projects, owners, window_start)?;
+    Ok(keys
+        .into_iter()
+        .map(|k| Source {
+            host: host.name.clone(),
+            config_dir: root.join(accounts::file_name(&k)),
+            account: k,
+        })
+        .collect())
+}
+
+/// What one view file was built from, kept in `<root>/manifest.json` so a
+/// transcript that has not changed since the last run is not rebuilt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Built {
+    size: u64,
+    mtime_ns: i128,
+    ino: u64,
+    /// accounts::Owners::signature of the transcript's session.
+    owners: String,
+    /// The accounts whose views it went to.
+    accounts: Vec<String>,
+}
+
+/// Lay out `projects` as one view per account under `root`, and return the
+/// accounts. Views persist between runs; only what changed is touched.
+///
+/// A transcript whose turns all go to one account, which is most of them, is
+/// hard-linked whole into that account's view: ccusage skips symlinks, and a
+/// hard link writes no data (it is copied only across filesystems). A
+/// transcript whose turns go to several accounts is split line by line, each
+/// line to the account that ran it at its timestamp (see accounts::Owners).
+/// A transcript whose size, modification time, inode and session markers are
+/// what they were on the last run is left alone, so a quiet run writes nothing.
+///
+/// A view file may be a hard link to a real transcript, so nothing here ever
+/// writes through a path in a view: each file is built under a temporary name
+/// and renamed into place, which replaces the name and leaves the file it
+/// pointed at untouched. View files whose transcript is gone are removed, so
+/// they do not hold on to the space of transcripts Claude Code cleaned up.
+/// Transcripts last written before the window cannot hold any of its usage,
+/// so they are left out.
+fn split_into(
+    root: &Path,
+    projects: &Path,
+    owners: &Owners,
+    window_start: i64,
+) -> Result<Vec<String>, String> {
+    use std::os::unix::fs::MetadataExt;
+
     let keys = owners.accounts();
-    let view = |key: &str| root.join(accounts::file_name(key));
+    let view = |key: &str| root.join(accounts::file_name(key)).join("projects");
     for k in &keys {
-        let dir = view(k).join("projects");
+        let dir = view(k);
         std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }
-    let projects = host.config_dir.join("projects");
-    for file in transcripts(&projects) {
-        let fresh = std::fs::metadata(&file)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .is_some_and(|d| d.as_secs() as i64 >= window_start);
-        let Ok(rel) = file.strip_prefix(&projects) else {
+    let manifest_path = root.join("manifest.json");
+    let before: HashMap<String, Built> = store::read_json(&manifest_path).unwrap_or_default();
+    let mut after: HashMap<String, Built> = HashMap::new();
+    let mut keep: BTreeSet<PathBuf> = BTreeSet::new();
+
+    for file in transcripts(projects) {
+        let Ok(meta) = std::fs::metadata(&file) else {
+            continue;
+        };
+        if meta.mtime() < window_start {
+            continue;
+        }
+        let Ok(rel) = file.strip_prefix(projects) else {
             continue;
         };
         // <project>/<session>.jsonl, or <project>/<session>/subagents/...
@@ -607,23 +657,50 @@ fn split(host: &Host, owners: &Owners, window_start: i64) -> Result<Vec<Source>,
         }) else {
             continue;
         };
-        if !fresh {
-            continue;
+        let key = rel.to_string_lossy().into_owned();
+        let mut built = Built {
+            size: meta.size(),
+            mtime_ns: meta.mtime() as i128 * 1_000_000_000 + meta.mtime_nsec() as i128,
+            ino: meta.ino(),
+            owners: owners.signature(&session),
+            accounts: Vec::new(),
+        };
+        if let Some(last) = before.get(&key) {
+            let same = Built {
+                accounts: last.accounts.clone(),
+                ..built.clone()
+            };
+            if *last == same && last.accounts.iter().all(|a| view(a).join(rel).exists()) {
+                keep.extend(last.accounts.iter().map(|a| view(a).join(rel)));
+                after.insert(key, same);
+                continue;
+            }
         }
-        if owners.only_default(&session) {
-            link_or_copy(&file, &view(&owners.default).join("projects").join(rel))?;
+        built.accounts = if owners.only_default(&session) {
+            place_link(&file, &view(&owners.default).join(rel))?;
+            vec![owners.default.clone()]
         } else {
-            split_file(&file, rel, &session, owners, &view)?;
+            match split_file(&file, rel, &session, owners, &view)? {
+                Some(accounts) => accounts,
+                // Claude Code removed it since the listing.
+                None => continue,
+            }
+        };
+        keep.extend(built.accounts.iter().map(|a| view(a).join(rel)));
+        after.insert(key, built);
+    }
+
+    // What no transcript produced this run: removed transcripts, ones that left
+    // the window, and the old place of one whose turns moved to another account.
+    for file in transcripts(root) {
+        if !keep.contains(&file) {
+            let _ = std::fs::remove_file(&file);
         }
     }
-    Ok(keys
-        .into_iter()
-        .map(|k| Source {
-            host: host.name.clone(),
-            config_dir: view(&k),
-            account: k,
-        })
-        .collect())
+    remove_empty_dirs(root);
+    store::write_json(&manifest_path, &after)
+        .map_err(|e| format!("writing {}: {e}", manifest_path.display()))?;
+    Ok(keys)
 }
 
 /// Every `*.jsonl` under `root`, at any depth, not following symlinks.
@@ -649,43 +726,104 @@ fn transcripts(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn link_or_copy(from: &Path, to: &Path) -> Result<(), String> {
+/// Remove directories under `root` left empty, deepest first, keeping the
+/// account views themselves.
+fn remove_empty_dirs(root: &Path) {
+    let mut dirs = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(e.path());
+                stack.push(e.path());
+            }
+        }
+    }
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    for dir in dirs {
+        if dir.parent() == Some(root) || dir.file_name().is_some_and(|n| n == "projects") {
+            continue;
+        }
+        // Fails, harmlessly, on any directory that is not empty.
+        let _ = std::fs::remove_dir(&dir);
+    }
+}
+
+/// A name in the same directory to build `to` under before renaming it in.
+/// It ends in `.jsonl` so that one left behind by a crash is swept away like
+/// any other view file no transcript produced, before ccusage could count it.
+fn temp_beside(to: &Path) -> PathBuf {
+    let mut name = to.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.tmp.jsonl", std::process::id()));
+    to.with_file_name(name)
+}
+
+/// Make `to` a hard link to `from`, unless it already is one. The link is made
+/// under a temporary name and renamed over `to`, so whatever `to` was before,
+/// possibly a link to some other transcript, is only unnamed, never written.
+fn place_link(from: &Path, to: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if let (Ok(a), Ok(b)) = (std::fs::metadata(from), std::fs::metadata(to))
+        && (a.dev(), a.ino()) == (b.dev(), b.ino())
+    {
+        return Ok(());
+    }
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("creating {}: {e}", parent.display()))?;
     }
-    match std::fs::hard_link(from, to).or_else(|_| std::fs::copy(from, to).map(|_| ())) {
-        Ok(()) => Ok(()),
+    let tmp = temp_beside(to);
+    let _ = std::fs::remove_file(&tmp);
+    let made = std::fs::hard_link(from, &tmp).or_else(|_| std::fs::copy(from, &tmp).map(|_| ()));
+    match made {
+        Ok(()) => std::fs::rename(&tmp, to)
+            .map_err(|e| format!("placing {} into a view: {e}", from.display())),
         // Claude Code removed it since the listing: there is nothing to count.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("linking {} into a view: {e}", from.display())),
     }
 }
 
-/// Write each account's lines of one transcript into its view. A line with no
-/// timestamp goes with the line before it.
+/// Write `bytes` to `to` under a temporary name, then rename it into place.
+/// Never opens `to` itself, which may be a hard link to a real transcript.
+fn write_replacing(to: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    }
+    let tmp = temp_beside(to);
+    std::fs::write(&tmp, bytes).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, to).map_err(|e| format!("writing {}: {e}", to.display()))
+}
+
+/// Put each account's lines of one transcript into its view, and return the
+/// accounts it went to, or None when the file is gone. A line with no
+/// timestamp goes with the line before it. When every line goes to one
+/// account the transcript is linked whole instead of copied.
 ///
 /// Lines are handled as bytes and copied as they are, so a line Claude Code is
 /// still writing, which can end inside a multi-byte character, reaches ccusage
-/// exactly as it would have unsplit; ccusage skips what does not parse. A file
-/// removed since the listing is skipped.
+/// exactly as it would have unsplit; ccusage skips what does not parse.
 fn split_file(
     file: &Path,
     rel: &Path,
     session: &str,
     owners: &Owners,
     view: &dyn Fn(&str) -> PathBuf,
-) -> Result<(), String> {
+) -> Result<Option<Vec<String>>, String> {
     #[derive(Deserialize)]
     struct Stamp {
         timestamp: Option<String>,
     }
     let bytes = match std::fs::read(file) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("reading {}: {e}", file.display())),
     };
-    let mut parts: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut parts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut owner = owners.default.clone();
     for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
         let at = serde_json::from_slice::<Stamp>(line)
@@ -700,15 +838,17 @@ fn split_file(
         part.extend_from_slice(line);
         part.push(b'\n');
     }
-    for (account, body) in parts {
-        let to = view(&account).join("projects").join(rel);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("creating {}: {e}", parent.display()))?;
-        }
-        std::fs::write(&to, body).map_err(|e| format!("writing {}: {e}", to.display()))?;
+    if parts.len() == 1 {
+        let account = parts.into_keys().next().unwrap_or_default();
+        place_link(file, &view(&account).join(rel))?;
+        return Ok(Some(vec![account]));
     }
-    Ok(())
+    let mut accounts = Vec::new();
+    for (account, body) in parts {
+        write_replacing(&view(&account).join(rel), &body)?;
+        accounts.push(account);
+    }
+    Ok(Some(accounts))
 }
 
 pub fn cache_path() -> PathBuf {
@@ -1044,8 +1184,9 @@ mod tests {
         .unwrap();
         let mut owners = Owners::new("main".into());
         owners.add("s1", 1_800_000_000, "second");
-        let view = |k: &str| dir.join(k);
-        split_file(&file, Path::new("p/s1.jsonl"), "s1", &owners, &view).unwrap();
+        let view = |k: &str| dir.join(k).join("projects");
+        let to = split_file(&file, Path::new("p/s1.jsonl"), "s1", &owners, &view).unwrap();
+        assert_eq!(to, Some(vec!["main".to_string(), "second".to_string()]));
         let read =
             |k: &str| std::fs::read_to_string(dir.join(k).join("projects/p/s1.jsonl")).unwrap();
         assert_eq!(
@@ -1066,27 +1207,190 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("in.jsonl");
-        // A complete line, then one cut off inside a two-byte character.
-        let body: Vec<u8> = [
-            b"{\"timestamp\":\"2027-01-15T07:59:00Z\"}\n".as_slice(),
+        // One line before the second account's marker, one after, then one
+        // cut off inside a two-byte character, which goes with the line before.
+        let after: Vec<u8> = [
+            b"{\"timestamp\":\"2027-01-15T08:01:00Z\"}\n".as_slice(),
             b"{\"t\":\"\xc3",
         ]
         .concat();
+        let body = [
+            b"{\"timestamp\":\"2027-01-15T07:59:00Z\"}\n".as_slice(),
+            &after,
+        ]
+        .concat();
         std::fs::write(&file, &body).unwrap();
-        let owners = Owners::new("main".into());
-        let view = |k: &str| dir.join(k);
+        let mut owners = Owners::new("main".into());
+        owners.add("s", 1_800_000_000, "second");
+        let view = |k: &str| dir.join(k).join("projects");
         split_file(&file, Path::new("p/s.jsonl"), "s", &owners, &view).unwrap();
-        let out = std::fs::read(dir.join("main/projects/p/s.jsonl")).unwrap();
-        assert_eq!(out, [body.as_slice(), b"\n"].concat());
-        split_file(
+        let out = std::fs::read(dir.join("second/projects/p/s.jsonl")).unwrap();
+        assert_eq!(out, [after.as_slice(), b"\n"].concat());
+        let gone = split_file(
             &dir.join("gone.jsonl"),
             Path::new("p/g.jsonl"),
             "g",
             &owners,
             &view,
-        )
-        .unwrap();
+        );
+        assert_eq!(gone, Ok(None));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A transcripts tree and a views root under a fresh temporary directory.
+    struct Tree {
+        dir: PathBuf,
+    }
+
+    impl Tree {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("ccmoneta-views-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("projects/p")).unwrap();
+            Tree { dir }
+        }
+        fn projects(&self) -> PathBuf {
+            self.dir.join("projects")
+        }
+        fn root(&self) -> PathBuf {
+            self.dir.join("views")
+        }
+        fn put(&self, rel: &str, body: &str) -> PathBuf {
+            let f = self.projects().join(rel);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, body).unwrap();
+            f
+        }
+        fn run(&self, owners: &Owners) {
+            split_into(&self.root(), &self.projects(), owners, 0).unwrap();
+        }
+        fn view(&self, account: &str, rel: &str) -> PathBuf {
+            self.root().join(account).join("projects").join(rel)
+        }
+        /// (inode, modification time) of every file under the views root.
+        fn state(&self) -> Vec<(PathBuf, u64, i128)> {
+            use std::os::unix::fs::MetadataExt;
+            let mut out: Vec<_> = transcripts(&self.root())
+                .into_iter()
+                .map(|f| {
+                    let m = std::fs::metadata(&f).unwrap();
+                    (
+                        f,
+                        m.ino(),
+                        m.mtime() as i128 * 1_000_000_000 + m.mtime_nsec() as i128,
+                    )
+                })
+                .collect();
+            out.sort();
+            out
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn ino(path: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).unwrap().ino()
+    }
+
+    const BEFORE: &str = "{\"timestamp\":\"2027-01-15T07:59:00Z\"}\n";
+    const AFTER: &str = "{\"timestamp\":\"2027-01-15T08:01:00Z\"}\n";
+
+    fn two_accounts() -> Owners {
+        let mut owners = Owners::new("main".into());
+        // The second account opened s2 at 2027-01-15T08:00:00Z.
+        owners.add("s2", 1_800_000_000, "second");
+        owners
+    }
+
+    #[test]
+    fn a_quiet_second_run_writes_nothing() {
+        let t = Tree::new("quiet");
+        t.put("p/s1.jsonl", BEFORE);
+        t.put("p/s2.jsonl", &format!("{BEFORE}{AFTER}"));
+        t.put("p/s2/subagents/a.jsonl", AFTER);
+        let owners = two_accounts();
+        t.run(&owners);
+        let first = t.state();
+        assert_eq!(
+            first.len(),
+            4,
+            "s1, s2 in two parts, and the subagent: {first:?}"
+        );
+        t.run(&owners);
+        assert_eq!(t.state(), first, "no view file was replaced or touched");
+    }
+
+    #[test]
+    fn a_transcript_with_one_account_is_linked_not_copied() {
+        let t = Tree::new("linked");
+        let s1 = t.put("p/s1.jsonl", BEFORE);
+        // s2's own file splits, but its subagent ran wholly under the second
+        // account, so that one is a link like any single-account transcript.
+        let sub = t.put("p/s2/subagents/a.jsonl", AFTER);
+        t.put("p/s2.jsonl", &format!("{BEFORE}{AFTER}"));
+        t.run(&two_accounts());
+        assert_eq!(ino(&t.view("main", "p/s1.jsonl")), ino(&s1));
+        assert_eq!(ino(&t.view("second", "p/s2/subagents/a.jsonl")), ino(&sub));
+        assert!(!t.view("main", "p/s2/subagents/a.jsonl").exists());
+    }
+
+    #[test]
+    fn a_real_transcript_is_never_written_through_its_link() {
+        let t = Tree::new("guard");
+        let body = format!("{BEFORE}{AFTER}");
+        let s2 = t.put("p/s2.jsonl", &body);
+        // First run: no marker yet, so the view is a hard link to s2 itself.
+        t.run(&Owners::new("main".into()));
+        assert_eq!(ino(&t.view("main", "p/s2.jsonl")), ino(&s2));
+        // The second account's marker appears: the same view path now gets
+        // only the earlier line. Writing it in place would cut s2 itself.
+        t.run(&two_accounts());
+        assert_eq!(
+            std::fs::read_to_string(&s2).unwrap(),
+            body,
+            "the transcript is untouched"
+        );
+        assert_ne!(ino(&t.view("main", "p/s2.jsonl")), ino(&s2));
+        assert_eq!(
+            std::fs::read_to_string(t.view("main", "p/s2.jsonl")).unwrap(),
+            BEFORE
+        );
+        assert_eq!(
+            std::fs::read_to_string(t.view("second", "p/s2.jsonl")).unwrap(),
+            AFTER
+        );
+    }
+
+    #[test]
+    fn appended_and_removed_transcripts_show_in_the_views() {
+        let t = Tree::new("changes");
+        let s2 = t.put("p/s2.jsonl", &format!("{BEFORE}{AFTER}"));
+        let s1 = t.put("p/s1.jsonl", BEFORE);
+        let owners = two_accounts();
+        t.run(&owners);
+        // A turn appended to the split session, and s1 cleaned up.
+        std::fs::write(&s2, format!("{BEFORE}{AFTER}{AFTER}")).unwrap();
+        std::fs::remove_file(&s1).unwrap();
+        t.run(&owners);
+        assert_eq!(
+            std::fs::read_to_string(t.view("second", "p/s2.jsonl")).unwrap(),
+            format!("{AFTER}{AFTER}")
+        );
+        assert!(
+            !t.view("main", "p/s1.jsonl").exists(),
+            "a gone transcript leaves the views"
+        );
+        let leftovers: Vec<_> = transcripts(&t.root())
+            .into_iter()
+            .filter(|f| f.to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]

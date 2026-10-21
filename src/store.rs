@@ -10,7 +10,8 @@
 //!                        last-sync, last-attempt and last-error, and markers.tsv,
 //!                        which of its accounts ran each session
 //!   views/<host>/<account>/  that account's part of a host's transcripts, hard
-//!                        links or split copies, rebuilt by each cost run
+//!                        links or split copies, kept between cost runs and
+//!                        updated only where a transcript changed (manifest.json)
 //!   jobs/<job>.json      a job's attempts, failures and backoff; written by that job
 //!   jobs/<job>.spawned   when a surface last started that job; written by surfaces
 //!   locks/<job>.lock     held while a job runs, so each job runs once at a time

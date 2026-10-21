@@ -381,6 +381,21 @@ impl Owners {
             .is_none_or(|l| l.iter().all(|(_, a)| *a == self.default))
     }
 
+    /// The markers that decide `session`'s turns, as one string: equal for two
+    /// runs exactly when every turn would go to the same account in both.
+    pub fn signature(&self, session: &str) -> String {
+        let marks = self
+            .sessions
+            .get(session)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut sig = self.default.clone();
+        for (born, account) in marks {
+            sig.push_str(&format!(";{born}:{account}"));
+        }
+        sig
+    }
+
     /// Every account a turn could go to.
     pub fn accounts(&self) -> Vec<String> {
         let mut all: Vec<String> = self
