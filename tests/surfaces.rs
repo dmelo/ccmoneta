@@ -31,7 +31,10 @@ impl Sandbox {
             &fake,
             r#"#!/bin/bash
 echo "$1 $2" >> "$FAKE_LOG"
+echo "$*" >> "$FAKE_LOG.args"
 if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi
+# The way a ccusage from before the parse cache refuses the flag.
+if [ "$FAKE_OLD" = 1 ]; then case " $* " in *" --no-cache "*) echo "Unknown daily option '--no-cache'" >&2; exit 2 ;; esac; fi
 if [ "$FAKE_FAIL" = 1 ]; then echo "fake ccusage failure" >&2; exit 1; fi
 case "$1 $2" in
   # Only the per-project report: a plain daily report would print nothing
@@ -272,6 +275,59 @@ fn yesterdays_figure_is_never_shown_as_today() {
     wait_until("a refresh for today", Duration::from_secs(20), || {
         fs::read_to_string(sb.cache("cost.json")).is_ok_and(|s| s.contains("12.34"))
     });
+}
+
+#[test]
+fn ccusage_runs_without_its_parse_cache() {
+    let sb = Sandbox::new("no-cache");
+    let out = sb.cmd(&["refresh", "cost", "--force"]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        fs::read_to_string(sb.cache("cost.json"))
+            .unwrap()
+            .contains("12.34"),
+        "no figure"
+    );
+    let args = fs::read_to_string(sb.root.join("calls.log.args")).unwrap();
+    let daily: Vec<&str> = args
+        .lines()
+        .filter(|l| l.starts_with("claude daily"))
+        .collect();
+    assert!(!daily.is_empty(), "{args}");
+    assert!(
+        daily
+            .iter()
+            .all(|l| l.split(' ').any(|a| a == "--no-cache")),
+        "{args}"
+    );
+}
+
+#[test]
+fn a_ccusage_without_the_parse_cache_still_reports() {
+    let sb = Sandbox::new("old-ccusage");
+    let out = sb
+        .cmd(&["refresh", "cost", "--force"])
+        .env("FAKE_OLD", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        fs::read_to_string(sb.cache("cost.json"))
+            .unwrap()
+            .contains("12.34"),
+        "no figure"
+    );
+    // Asked with the flag, refused, asked again without it.
+    let args = fs::read_to_string(sb.root.join("calls.log.args")).unwrap();
+    let daily: Vec<&str> = args
+        .lines()
+        .filter(|l| l.starts_with("claude daily"))
+        .collect();
+    assert_eq!(daily.len(), 2, "{args}");
+    assert!(
+        daily[0].contains("--no-cache") && !daily[1].contains("--no-cache"),
+        "{args}"
+    );
 }
 
 fn now() -> i64 {

@@ -182,12 +182,19 @@ pub fn ccusage_exe() -> std::ffi::OsString {
         .unwrap_or_else(|| "ccusage".into())
 }
 
-fn ccusage(args: &[&str], config_dir: &Path) -> Result<Vec<u8>, String> {
+/// Asks ccusage not to keep its on-disk parse cache. That cache is one file
+/// for every CLAUDE_CONFIG_DIR, and the cost job runs ccusage once per view,
+/// so each run invalidated the previous one's cache and rewrote the whole file
+/// (tens of MB, several times per refresh). Parsing without it takes about a
+/// second per view, read from the page cache, and writes nothing.
+const NO_CACHE: &str = "--no-cache";
+
+fn run_ccusage(args: &[&str], config_dir: &Path) -> Result<std::process::Output, String> {
     // One config directory per run. ccusage silently skips a CLAUDE_CONFIG_DIR
     // that does not exist, so a host with no data on disk would still be
     // listed as counted while contributing nothing; hosts() returns only
     // directories that actually contain projects/ to rule that out.
-    let out = Command::new(ccusage_exe())
+    Command::new(ccusage_exe())
         .args(args)
         .env("CLAUDE_CONFIG_DIR", config_dir)
         .output()
@@ -198,7 +205,20 @@ fn ccusage(args: &[&str], config_dir: &Path) -> Result<Vec<u8>, String> {
             } else {
                 format!("ccusage: {e}")
             }
-        })?;
+        })
+}
+
+fn ccusage(args: &[&str], config_dir: &Path) -> Result<Vec<u8>, String> {
+    let mut out = run_ccusage(args, config_dir)?;
+    // A ccusage older than its parse cache rejects --no-cache as an unknown
+    // option, and has no cache to skip: run it again without the flag.
+    if !out.status.success()
+        && args.contains(&NO_CACHE)
+        && String::from_utf8_lossy(&out.stderr).contains(&format!("'{NO_CACHE}'"))
+    {
+        let older: Vec<&str> = args.iter().copied().filter(|a| *a != NO_CACHE).collect();
+        out = run_ccusage(&older, config_dir)?;
+    }
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let detail = stderr.lines().rev().find(|l| !l.trim().is_empty());
@@ -417,6 +437,7 @@ pub fn gather(days: i64) -> Result<Costs, String> {
                             "--json",
                             "--breakdown",
                             "--instances",
+                            NO_CACHE,
                             "--since",
                             since,
                         ],
