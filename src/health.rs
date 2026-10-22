@@ -548,7 +548,7 @@ fn check_version() -> Result<VersionState, String> {
 
 /// Shells out to curl, like the usage endpoint, so the binary needs no TLS
 /// stack. This job runs a few times an hour.
-fn curl_text(url: &str) -> Result<String, String> {
+pub fn curl_text(url: &str) -> Result<String, String> {
     let out = Command::new("curl")
         .args(["-sS", "--fail", "--max-time", "10", url])
         .stdin(Stdio::null())

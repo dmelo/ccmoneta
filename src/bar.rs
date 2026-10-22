@@ -9,7 +9,7 @@
 //!
 //! The block only reads the cache. When something is stale it starts a
 //! background refresh and shows what it has, so a bar tick never waits on the
-//! network or on ccusage.
+//! network or on reading transcripts.
 
 use chrono::NaiveDate;
 
@@ -676,7 +676,7 @@ mod tests {
     fn missing_limits_and_a_failing_cost_refresh_are_marked() {
         let failing = JobState {
             failures: 1,
-            last_error: Some("ccusage not found".into()),
+            last_error: Some("no model prices: curl not found".into()),
             ..Default::default()
         };
         let ok = JobState::default();
@@ -685,7 +685,7 @@ mod tests {
         assert_eq!((v.level, v.cost_error), ("unknown", true));
         assert!(
             v.tooltip
-                .contains("last spend refresh failed: ccusage not found")
+                .contains("last spend refresh failed: no model prices: curl not found")
         );
         let json: serde_json::Value = serde_json::from_str(&waybar(&v)).unwrap();
         assert_eq!(json["class"], serde_json::json!(["unknown", "error"]));

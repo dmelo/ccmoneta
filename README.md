@@ -5,7 +5,7 @@
 ![The ccmoneta dashboard: daily spend, limits for two accounts, spend per model and per project (made-up figures)](docs/img/dashboard.svg)
 
 - **Limits:** the plan's 5-hour and 7-day usage percentages, with reset times. These come from Anthropic, through the JSON Claude Code passes to its status line, or through `GET /api/oauth/usage` when no status line has reported recently.
-- **Spend:** what the usage would have cost at API prices, today, over 7 days and over 30 days, per model, per project and per machine. [ccusage](https://github.com/ccusage/ccusage) computes it from Claude Code's transcripts; ccmoneta keeps no pricing table of its own.
+- **Spend:** what the usage would have cost at API prices, today, over 7 days and over 30 days, per model, per project and per machine. Computed from Claude Code's transcripts, with the rules of [ccusage](https://github.com/ccusage/ccusage) and the prices of the model list ccusage uses; ccmoneta keeps no pricing table of its own.
 - **Health:** whether Claude is operational, from [status.claude.com](https://status.claude.com), and whether this machine's Claude Code is the newest release on its channel. Both stay out of sight until there is something to say.
 - **Several machines:** count the Claude Code usage of every machine you work on, synced over ssh and rsync (see [Counting more than one machine](#counting-more-than-one-machine)).
 - **Several accounts:** with [aimux](https://github.com/Digital-Threads/aimux), limits and spend per Claude subscription, labelled with its plan (see [Several Claude accounts](#several-claude-accounts-aimux)).
@@ -19,13 +19,12 @@
 | Status bar block (i3blocks, swaybar, Waybar) | `ccmoneta bar`, or `ccmoneta bar --format waybar` |
 | Claude Code status line | `ccmoneta hook` |
 
-Use any of them, or all. Each one renders from a shared cache and, when a value is stale, starts a refresh in the background, so none of them waits on the network or on ccusage and none depends on another being open. [docs/design.md](docs/design.md) explains how.
+Use any of them, or all. Each one renders from a shared cache and, when a value is stale, starts a refresh in the background, so none of them waits on the network or on reading transcripts and none depends on another being open. [docs/design.md](docs/design.md) explains how.
 
 ## Requirements
 
 - Linux. The dashboard and the status line hook use nothing Linux-specific but have not been tested elsewhere.
-- [ccusage](https://github.com/ccusage/ccusage), for spend: `npm install -g ccusage`.
-- `curl`, to poll the usage endpoint when the status line is not feeding limits, and to check Claude's status page and the published Claude Code version.
+- `curl`, to download model prices for spend, to poll the usage endpoint when the status line is not feeding limits, and to check Claude's status page and the published Claude Code version.
 - `ssh` and `rsync`, only to count other machines.
 - A Rust toolchain to build.
 
@@ -121,8 +120,9 @@ If you run more than one Claude subscription with [aimux](https://github.com/Dig
 ## How the numbers are computed
 
 - **Limits** are per Claude account, so they are shown as reported and never summed across machines.
-- **Spend** runs `ccusage claude daily` once per machine, in parallel, and adds the results, so the per-machine figures always add up to the totals.
-- **Per-model and per-project spend**, for the window and for each day, come from the same run (`--breakdown --instances`), so they add up to the totals too. A project is labelled with the last two segments of its path, which also merges the same checkout across machines.
+- **Spend** is read from the transcripts of every machine, by the rules ccusage uses, so the two agree: a reply that several transcripts copied (a resumed session copies its history) counts once, days are local calendar days, and each request is priced on its own, including one-hour cache writes and, where the price list has them, rates above 200k tokens. Each transcript is read once; after that a refresh reads only what was appended, so it stays quick and writes next to nothing.
+- **Prices** come from [LiteLLM's model list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), the list ccusage prices with, downloaded at most once a day. A model the list does not name is never guessed: its usage counts as $0, the dashboard shows it as `no price`, and `ccmoneta doctor` names it.
+- **Per-model, per-project, per-machine and per-account spend**, for the window and for each day, come from the same records, so they add up to the totals. A project is labelled with the last two segments of its path, which also merges the same checkout across machines.
 - **Service status** comes from `https://status.claude.com/api/v2/summary.json`: the overall indicator, the `Claude Code` component, any component that is not operational, and the unresolved incidents.
 - **The published Claude Code version** is looked up the way Claude Code's own updater does, because where it lives depends on how Claude Code was installed: a native install reads `https://downloads.claude.ai/claude-code-releases/<channel>`, an npm or bun global install runs `npm view` against a pinned registry from your home directory, and a Homebrew install reads its own cask, whose channel is fixed by the cask name rather than by settings. The channel is `autoUpdatesChannel` from Claude Code's settings, defaulting to `latest`, and only ever the literal `stable` or `latest`. Versions are compared numerically, so an install ahead of its channel reads as current rather than behind.
 - Today's figure on the bar and status line reads `$12.34` when current, `~$12.34` when over an hour old, `$…` while the first refresh for today runs, and `$?` when refreshing failed.
@@ -137,7 +137,8 @@ Under `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`:
 | `limits.json` | The latest limit windows, and where they came from; with several aimux accounts, `limits/<account>.json` instead |
 | `health.json` | Claude's service status and the installed-vs-published Claude Code version |
 | `hosts/<name>/` | A mirrored machine's transcripts, with `last-sync`, `last-attempt`, `last-error` and `markers.tsv` (which of its accounts ran each session) |
-| `views/` | Each account's part of each machine's transcripts, rebuilt on every spend refresh; almost all hard links, so it takes next to no space |
+| `ledger.jsonl` | Every usage record read from the transcripts (tokens, not dollars), and how far each transcript has been read; appended to, and compacted when mostly obsolete |
+| `prices.json` | The model price list, as downloaded |
 | `jobs/` | Each refresh job's last attempt, failures and backoff |
 | `refresh.log` | One line per background refresh, and a note when a cache file does not read |
 
@@ -147,7 +148,7 @@ Under `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`:
 |---|---|
 | `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` | Where the cache and the config live |
 | `CLAUDE_CONFIG_DIR` | Where `install statusline` and `doctor` look for Claude Code's settings |
-| `CCMONETA_CCUSAGE` | The ccusage executable to run |
+| `CCMONETA_PRICES_URL` | Where to download the model price list from, instead of LiteLLM's |
 | `CCMONETA_CLAUDE` | The claude executable to read the installed version from |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Claude Code's own setting; when set, the version lookup is skipped, as the built-in updater does |
 | `CCMONETA_SSH` | The ssh executable, for sync's listing and rsync's transport |
@@ -160,7 +161,7 @@ Under `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`:
 cargo test
 ```
 
-The integration tests run the real binary against a throwaway cache, config and home, with a fake ccusage and a fake ssh, so they touch nothing of yours and need no network. The sync tests need `rsync`.
+The integration tests run the real binary against a throwaway cache, config and home, with a local price list and a fake ssh, so they touch nothing of yours and need no network. The sync tests need `rsync`.
 
 ## The name
 

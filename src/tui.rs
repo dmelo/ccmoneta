@@ -16,7 +16,7 @@
 //! Everything on screen comes from the shared cache, re-read every couple of
 //! seconds. The refreshes that fill it run as separate `ccmoneta refresh`
 //! processes shared with the bar and the status line (see refresh.rs), so the
-//! dashboard never blocks on ccusage or the network, and closing it does not
+//! dashboard never blocks on reading transcripts or the network, and closing it does not
 //! stop the bar or the status line from being correct.
 
 use std::cell::{Cell, RefCell};
@@ -666,9 +666,18 @@ fn model_rows(app: &App) -> Vec<Line<'_>> {
                 0.0
             };
             let name = m.model_name.trim_start_matches("claude-");
+            let tokens = human_tokens(m.input_tokens + m.output_tokens + m.cache_read_tokens);
+            // Counted as $0 because the price list does not name it: say so,
+            // rather than show a figure that reads as free.
+            if m.unpriced {
+                return Line::styled(
+                    format!("{name:<16} {tokens:>9}  no price"),
+                    Style::default().fg(Color::Red),
+                );
+            }
             Line::from(format!(
                 "{name:<16} {:>9} {:>9} {:>4.0}%",
-                human_tokens(m.input_tokens + m.output_tokens + m.cache_read_tokens),
+                tokens,
                 format!("${:.2}", m.cost),
                 share
             ))

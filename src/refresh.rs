@@ -258,8 +258,8 @@ pub fn run(cfg: &Config, job: Job, force: bool) -> i32 {
         // The usage endpoint is rate-limited, so its backoff holds even on a
         // manual refresh.
         Job::Limits => !state.allows(now),
-        // A manual cost refresh goes ahead, so fixing a missing ccusage takes
-        // effect at once.
+        // A manual cost refresh goes ahead, so fixing a failed price download
+        // takes effect at once.
         Job::Cost => !force && !state.allows(now),
         // Each host spaces its own attempts (see sync::is_due), so one
         // unreachable host does not hold back the others.

@@ -14,7 +14,21 @@ So: own the limits and the layout, delegate pricing to ccusage, and never carry 
 
 ## Delegate pricing to ccusage, permanently (2026-09-15)
 
+**Superseded on 2026-10-21** by the next entry; kept for the reasoning, which still holds for the price table.
+
 A hard-coded price table is the single failure that made an otherwise good tool report wrong dollars, and it fails *silently*: usage of a model the table does not know is priced as something else. ccusage maintains pricing as its whole reason to exist. `CCMONETA_CCUSAGE` selects the executable, which is also what makes the tests deterministic. **Reopen only** if ccusage is abandoned; even then, a wrong-price marker in the UI is a precondition.
+
+## Compute spend here, by ccusage's rules and from its price source (2026-10-21)
+
+Reopened for a reason the entry above did not foresee: running ccusage became the expensive part of ccmoneta. ccusage takes a directory and rereads every transcript in its window each time it runs, which on a heavily used machine is several gigabytes every few minutes; and to split spend by account, ccmoneta had to lay out each account's share of the transcripts as files for it to read, which at its worst wrote over a gigabyte per refresh. The rereading cannot be changed from outside ccusage; the per-account files can be cut down to hard links and the files that changed, but stay a second tree of transcripts to keep in step.
+
+So ccmoneta reads the transcripts itself, incrementally, and keeps tokens in a ledger (see design.md, Cost). What made the entry above right is kept:
+
+- **No price table here.** Rates come from LiteLLM's model list, the list ccusage prices with, downloaded and cached. Nothing in this repo names a model's price.
+- **No silent wrong price.** A model the list does not name counts as $0 and is shown as `no price` on the dashboard and named by `ccmoneta doctor`: the wrong-price marker the entry above made a precondition.
+- **ccusage's semantics, not new ones.** Which lines count, deduplication, day boundaries and the per-request formula are ported from ccusage, and the result was checked against it on real data: the same token totals, and the same dollars per day, account, machine and model for every model the list names.
+
+**Reopen if** the figures drift from ccusage's for current Claude models, or LiteLLM's list stops being maintained.
 
 ## Name: ccmoneta (2026-09-15)
 

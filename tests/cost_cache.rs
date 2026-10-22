@@ -1,7 +1,8 @@
 //! An unreadable `cost.json`, against a throwaway cache.
 //!
-//! HOME has no credentials and ccusage is `false`, so any refresh a surface
-//! starts fails without touching the network or the file under test.
+//! HOME has no credentials and the price list's address leads nowhere, so any
+//! refresh a surface starts fails without touching the network or the file
+//! under test.
 
 use std::fs;
 use std::process::{Command, Stdio};
@@ -27,7 +28,7 @@ fn an_unreadable_cost_json_is_logged_once_per_version() {
             .env("HOME", root.join("home"))
             .env("XDG_CACHE_HOME", root.join("cache"))
             .env("XDG_CONFIG_HOME", root.join("config"))
-            .env("CCMONETA_CCUSAGE", "false")
+            .env("CCMONETA_PRICES_URL", "file:///nonexistent/prices.json")
             .stdout(Stdio::null())
             .status()
             .unwrap()
