@@ -1,5 +1,5 @@
-//! `ccmoneta doctor`, against a throwaway environment: fake ccusage, fake ssh,
-//! no credentials, no status line.
+//! `ccmoneta doctor`, against a throwaway environment: fake ssh, no
+//! credentials, no status line.
 
 use std::fs;
 use std::path::PathBuf;
@@ -32,18 +32,12 @@ impl Sandbox {
         )
         .unwrap();
         fs::write(
-            root.join("fake-ccusage"),
-            "#!/bin/bash\necho 'ccusage 99.0.0'\n",
-        )
-        .unwrap();
-        fs::write(
             root.join("fake-ssh"),
             "#!/bin/bash\nif [ \"$FAKE_SSH_FAIL\" = 1 ]; then echo 'Permission denied (publickey).' >&2; exit 255; fi\nexit 0\n",
         )
         .unwrap();
         Command::new("chmod")
             .arg("+x")
-            .arg(root.join("fake-ccusage"))
             .arg(root.join("fake-ssh"))
             .status()
             .unwrap();
@@ -57,7 +51,6 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
-            .env("CCMONETA_CCUSAGE", self.root.join("fake-ccusage"))
             .env("CCMONETA_SSH", self.root.join("fake-ssh"));
         for (k, v) in env {
             c.env(k, v);
@@ -81,7 +74,7 @@ fn a_working_setup_passes_and_says_what_is_limited() {
     let sb = Sandbox::new("healthy");
     let (code, out) = sb.doctor(&[]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("ok    ccusage: ccusage 99.0.0"), "{out}");
+    assert!(out.contains("warn  no model prices yet"), "{out}");
     assert!(
         out.contains("ok    laptop: ssh to laptop.test works without prompting"),
         "{out}"
@@ -104,12 +97,21 @@ fn an_unreachable_host_fails() {
 }
 
 #[test]
-fn a_missing_ccusage_fails_with_the_fix() {
-    let sb = Sandbox::new("ccusage");
-    let (code, out) = sb.doctor(&[("CCMONETA_CCUSAGE", "/nonexistent/ccusage")]);
-    assert_eq!(code, 1, "{out}");
+fn models_without_a_price_are_named() {
+    let sb = Sandbox::new("unpriced");
+    let today = chrono::Local::now().format("%Y-%m-%d");
+    fs::create_dir_all(sb.root.join("cache/ccmoneta")).unwrap();
+    fs::write(
+        sb.root.join("cache/ccmoneta/cost.json"),
+        format!(
+            r#"{{"generated_at": {}, "date": "{today}", "costs": {{"unpriced": ["vendor/new-model"]}}}}"#,
+            chrono::Utc::now().timestamp()
+        ),
+    )
+    .unwrap();
+    let (_, out) = sb.doctor(&[]);
     assert!(
-        out.contains("FAIL  ccusage: not found; install it with `npm install -g ccusage`"),
+        out.contains("warn  no price for vendor/new-model: counted as $0"),
         "{out}"
     );
 }

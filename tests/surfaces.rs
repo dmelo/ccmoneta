@@ -1,10 +1,11 @@
-//! Each surface on its own, against a throwaway cache and a fake ccusage.
+//! Each surface on its own, against a throwaway cache and a fake curl.
 //!
 //! Every test gets its own HOME, XDG_CACHE_HOME and XDG_CONFIG_HOME under the
 //! system temp directory, so nothing touches the real cache, config or
-//! transcripts. The fake ccusage logs each call and returns $12.34 for today.
-//! HOME holds no Claude credentials, so the limits job fails without reaching
-//! the network.
+//! transcripts. HOME holds one transcript with $12.34 of usage today, at the
+//! fake curl's prices; the fake logs each download of the price list, and
+//! fails anything else, so no job reaches the network. HOME holds no Claude
+//! credentials, so the limits job fails too.
 
 use std::fs;
 use std::io::Write;
@@ -26,22 +27,34 @@ impl Sandbox {
         fs::create_dir_all(root.join("home/.claude/projects")).unwrap();
         fs::create_dir_all(root.join("cache")).unwrap();
         fs::create_dir_all(root.join("config")).unwrap();
-        let fake = root.join("fake-ccusage");
+        let project = root.join("home/.claude/projects/-home-me-code-project");
+        fs::create_dir_all(&project).unwrap();
         fs::write(
-            &fake,
+            project.join("s1.jsonl"),
+            format!(
+                r#"{{"type":"assistant","timestamp":"{}","sessionId":"s1","requestId":"req_1","message":{{"id":"msg_1","model":"claude-opus-5","usage":{{"input_tokens":1234,"output_tokens":0}}}}}}"#,
+                local_now()
+            ) + "\n",
+        )
+        .unwrap();
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            bin.join("curl"),
             r#"#!/bin/bash
-echo "$1 $2" >> "$FAKE_LOG"
+case " $* " in *prices.test*) ;; *) exit 7 ;; esac
+echo prices >> "$FAKE_LOG"
 if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi
-if [ "$FAKE_FAIL" = 1 ]; then echo "fake ccusage failure" >&2; exit 1; fi
-case "$1 $2" in
-  # Only the per-project report: a plain daily report would print nothing
-  # and fail to parse, so dropping --instances cannot pass unnoticed.
-  "claude daily") case " $* " in *" --instances "*) printf '{"projects":{"-home-me-code-project":[{"date":"%s","totalCost":12.34,"totalTokens":100,"modelBreakdowns":[{"modelName":"claude-opus-5","cost":12.34}]}]}}' "$(date +%Y-%m-%d)" ;; esac ;;
-esac
+if [ "$FAKE_FAIL" = 1 ]; then echo "fake price list failure" >&2; exit 22; fi
+printf '%s' '{"claude-opus-5": {"input_cost_per_token": 0.01, "output_cost_per_token": 0}}'
 "#,
         )
         .unwrap();
-        Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
+        Command::new("chmod")
+            .arg("+x")
+            .arg(bin.join("curl"))
+            .status()
+            .unwrap();
         Sandbox { root }
     }
 
@@ -53,7 +66,8 @@ esac
             .env("HOME", self.root.join("home"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("CCMONETA_CCUSAGE", self.root.join("fake-ccusage"))
+            .env("PATH", path_with(&self.root.join("bin")))
+            .env("CCMONETA_PRICES_URL", "https://prices.test/list.json")
             .env("FAKE_LOG", self.root.join("calls.log"));
         c
     }
@@ -190,16 +204,7 @@ fn many_stale_callers_at_once_start_one_refresh() {
     });
     // Give any straggler that lost the race time to start, check, and exit.
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(
-        sb.calls("claude daily"),
-        1,
-        "one host, so exactly one daily run"
-    );
-    assert_eq!(
-        sb.calls("claude session"),
-        0,
-        "projects come from the daily run"
-    );
+    assert_eq!(sb.calls("prices"), 1, "one refresh, so one download");
 }
 
 #[test]
@@ -213,7 +218,7 @@ fn the_hook_returns_at_once_while_a_refresh_is_running() {
     assert!(took < Duration::from_secs(2), "hook took {took:?}");
     assert!(String::from_utf8(out.stdout).unwrap().contains("$…"));
     wait_until("the refresh to start", Duration::from_secs(5), || {
-        sb.calls("claude daily") == 1
+        sb.calls("prices") == 1
     });
     assert!(sb.cost_job_running(), "the refresh should still be running");
     assert!(!exists(&sb.cache("cost.json")));
@@ -239,7 +244,7 @@ fn a_failing_refresh_shows_a_marker_and_backs_off() {
     let shown = sb.bar(&fail);
     assert!(shown.lines().next().unwrap().contains("$?"), "{shown}");
     let state = fs::read_to_string(sb.cache("jobs/cost.json")).unwrap();
-    assert!(state.contains("fake ccusage failure"), "{state}");
+    assert!(state.contains("fake price list failure"), "{state}");
 
     // Clear the spawn debounce, so only the backoff stands between these bars
     // and another attempt.
@@ -249,7 +254,7 @@ fn a_failing_refresh_shows_a_marker_and_backs_off() {
     }
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(
-        sb.calls("claude daily"),
+        sb.calls("prices"),
         1,
         "backoff should stop further attempts"
     );
@@ -279,6 +284,24 @@ fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+/// `dir` ahead of the inherited PATH, so its fake curl is the one found.
+fn path_with(dir: &Path) -> std::ffi::OsString {
+    let mut dirs = vec![dir.to_path_buf()];
+    dirs.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(dirs).unwrap()
+}
+
+/// Now, local time, as Claude Code writes a transcript's timestamp.
+fn local_now() -> String {
+    let out = Command::new("date")
+        .arg("+%Y-%m-%dT%H:%M:%S.000%:z")
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
 /// Yesterday's local date, from `date`, to avoid a dev-dependency for one test.

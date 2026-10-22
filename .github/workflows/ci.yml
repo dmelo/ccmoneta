@@ -52,8 +52,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      # The tests use a throwaway HOME, cache and config, a fake ccusage and a
-      # fake ssh, and assert that no health check is ever due, so this reaches
+      # The tests use a throwaway HOME, cache and config, a local price list and
+      # a fake ssh, and assert that no health check is ever due, so this reaches
       # no network.
       - name: Tests
         run: cargo test --locked

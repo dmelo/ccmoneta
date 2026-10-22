@@ -35,7 +35,7 @@ Nothing needs to be installed beyond the binary: the act of looking at any surfa
 
 | Job | Does | Produces |
 |---|---|---|
-| `cost` | runs ccusage (see Cost) | `cost.json`: the full dashboard data set, not only today's total |
+| `cost` | reads what the transcripts gained and prices it (see Cost) | `cost.json`: the full dashboard data set, not only today's total; `ledger.jsonl`, `prices.json` |
 | `limits` | polls `GET /api/oauth/usage` | `limits.json` |
 | `sync` | mirrors configured remote machines' transcripts | `hosts/<name>/projects/`, `hosts/<name>/last-sync` |
 | `health` | reads the status page, and the published version for this install's channel | `health.json` |
@@ -77,7 +77,7 @@ Sync is the exception. Each host spaces its own attempts (see the policy above),
 
 - With no cache at all, surfaces show `…` where a value will appear and trigger the jobs. Nothing blocks.
 - A failing job keeps the last good value on screen, with its age, rather than replacing it with nothing. If there has never been a good value, surfaces show a short marker (`$?`) and the dashboard shows `last_error`.
-- A missing `ccusage` is the most likely failure for a new user. Its error names the fix, and `ccmoneta doctor` reports it.
+- With no price list yet and no network, the cost job fails with the curl error; `ccmoneta doctor` reports whether prices have been downloaded.
 - Optionally, a successful job signals the bar so it redraws without waiting for its next interval: `pkill -RTMIN+<signal> -x <program>`, when `bar.signal` and `bar.program` are both set.
   - Both are required because an unhandled real-time signal terminates the process that receives it (signal(7)), so a signal is only ever sent to a program the user named.
   - `program` is at most 15 characters, because `pkill -x` matches the kernel's process name, which is cut to 15 characters, and procps refuses a longer pattern as matching nothing.
@@ -85,13 +85,17 @@ Sync is the exception. Each host spaces its own attempts (see the policy above),
 
 ## Cost
 
-Unchanged in substance from today:
-
-- ccusage prices the transcripts; ccmoneta carries no pricing table. A hard-coded table is what made CCMeter bill Opus 5 at Sonnet rates without warning.
-- Everything comes from one `ccusage claude daily --json --breakdown --instances` run per host, in parallel, with `CLAUDE_CONFIG_DIR` set to that host's directory alone: per project, per day, per model. ccmoneta folds it into the daily series, the per-host totals, and models and projects both for the window and for each day (`days` in `cost.json`, which the dashboard shows for a picked day). All of them add up to the header by construction. Projects used to come from the session report, which came out materially higher than the daily totals over the same window.
-- `claude daily`, never the bare `daily`: in ccusage 20 that covers every agent CLI found on this machine regardless of `CLAUDE_CONFIG_DIR`, so another agent's usage would be added once per host. ccusage 20.0.20 also silently dropped entries newer Claude Code writes; `ccmoneta doctor` warns below 20.0.26.
-- Verified ccusage behaviour relied on: `CLAUDE_CONFIG_DIR` takes a comma-separated list and rejects `:`; a path that does not exist is skipped silently; a window with no usage exits 0 with an empty `daily` list.
-- `CCMONETA_CCUSAGE` overrides the ccusage executable. The integration tests use it to run against a fake ccusage with fixed output, so behaviour is testable without anyone's real transcripts.
+- Spend is computed by ccmoneta itself, from the transcripts, by ccusage's rules, so the two agree. ccmoneta ran `ccusage claude daily` once per host and per account until that cost more than it was worth: every refresh reread every transcript in the window (several GB on a busy machine) and, since ccusage takes a directory, each account's share had to be laid out as files for it to read. Checked against ccusage on real data: identical token totals, and identical dollars per day, account, machine and model for every model the price list names.
+- ledger.rs reads the transcripts incrementally into `ledger.jsonl`. Claude Code only appends, so a transcript is read once and afterwards only from where the last read ended; a line not yet finished waits for its newline. The ledger is append-only: each run adds the records it found and one line per transcript that grew, and nothing else, so a quiet run writes nothing there. It is rewritten without dead lines only once those outnumber the live ones.
+  - A transcript is known by its path and checked by a hash of the last 4 KB read. One that shrank or no longer matches is read again from the start and its old records dropped: rsync replaces a changed file rather than appending to it, so that is what every synced transcript looks like.
+  - One that disappears, or was last written more than a day before the window (ccusage skips those too), has its records dropped.
+  - Records hold tokens, not dollars, and the session and time of the turn rather than an account: a new price list, or a marker that arrives later with a sync, applies to all of history on the next run.
+- Which lines count is ccusage's choice, followed in ledger.rs: a line with `"usage":{` carrying input and output counts and a timestamp; minus a `null` in one of the fields ccusage requires, at any depth; a `speed` other than `standard` or `fast`; an empty id or model; a `version` that is not one. Advisor iterations (`usage.iterations[]` of type `advisor_message`) are records of their own at their own model. With a `cache_creation` split, the five-minute and one-hour writes come from it and `cache_creation_input_tokens` is ignored. Agent-progress lines are not read; no current transcript has them.
+- Deduplication is ccusage's `push_deduped_daily_entry`, ported in cost.rs: over every record, in ccusage's reading order (transcripts by path, then line), a record matching one kept, by message and request id (by message and session when there is no request id) or as a sidechain replaying a message of the same session, replaces it if it is a main-chain copy, has more tokens, costs more or names its speed, in that order, and is dropped otherwise. Claude Code streams a reply as several lines, and a resumed session copies its history into a new transcript, so about three in four usage lines are copies. ledger.rs collapses the copies within one transcript as it reads them, since the rule gives the same winner either way; that halves the ledger.
+- prices.rs downloads LiteLLM's model list, the one ccusage prices with, with curl, at most once a day, into `prices.json`; an unchanged download is not written again. A failed download keeps the copy already there. The rates: exact key first, else the longest key that contains the model name or is contained in it at word boundaries, never across a version (`claude-opus-5` is not `claude-opus-5-5`). Per request: each kind of token at its rate, the part above 200k tokens at the `_above_200k_tokens` rate where the list has one, one-hour cache writes at twice the input rate, fast mode times the entry's `fast` multiplier; a `costUSD` on the line is used as it is. A model the list does not name costs $0 and is reported: `unpriced` in `cost.json`, `no price` in the dashboard, a warning in `ccmoneta doctor`. That marker is the condition docs/decisions.md set for doing the pricing here.
+- Where ccmoneta and ccusage still differ: ccusage falls back to models.dev for a model LiteLLM lacks (ccmoneta reports it unpriced instead), applies its own fast-mode multipliers for two older Opus models whose LiteLLM entries have none, and reads `ccusage.json` and `CCUSAGE_MODEL_ALIASES`. None of these touch current Claude models.
+- Days are local calendar days. A record outside the window is in the ledger, for deduplication, and in no figure.
+- `CCMONETA_PRICES_URL` replaces the price list's address. The integration tests point it at a local file (curl reads `file://`), so they run without the network.
 
 ## Accounts
 
@@ -99,7 +103,7 @@ aimux runs each Claude subscription as a profile: a config directory of its own 
 
 - **Limits** are kept per account in `limits/<uuid>.json`. The limits job reads them all with `aimux status --json --max-age N`, which reuses a reading aimux took for someone else within N seconds: half the limits' own threshold, at most 120, so a reused reading is never due again on arrival. An account aimux cannot read (an expired login) is saved with the reason and shown as such; the job fails only when no account could be read, so one account's trouble does not back off the others. The status line hook finds its account from the inherited `CLAUDE_CONFIG_DIR` and saves the payload's windows there only; under a directory no profile names, it shows them without saving, since saving anywhere would overwrite another account's.
 - **Spend** is attributed per turn with aimux's rule (accounts::Owners): Claude Code creates `session-env/<session>/` in the config directory of each profile that opens a session; a turn goes to the account whose marker for its session was born last before the turn, and to the source account when there is none. Birth times come from `statx` on Linux and `st_birthtime` on macOS, with the modification time as a fallback, which can only make a marker look younger.
-- A host where more than one account has markers is split into views, `views/<host>/<account>/projects/`, and ccusage runs once per view. A session only the source account ran is hard-linked whole; one another account touched is split line by line. Hard links, because ccusage skips symlinked files and directories (checked: a symlinked transcript prices at $0). Transcripts last modified before the window are left out. A host with one account is read in place. A local profile with a real `projects/` of its own (`aimux migrate isolate`) is one more source, all of it that account's.
+- Each record goes to its account when the figures are added up: by the host's markers, for the session its transcript belongs to (`<session>.jsonl`, or `<session>/` for subagents) at the turn's time. A local profile with a real `projects/` of its own (`aimux migrate isolate`) is one more root, all of it that account's.
 - Sync runs accounts::REMOTE_MARKERS in a second ssh command, piped to `sh -s` because the login shell may be zsh, and keeps its output as `hosts/<name>/markers.tsv`: one line per profile (uuid, name, whether it is the source) and one per marker (session id, birth time). It asks `stat` which flavour it is first: GNU's `-f` means filesystem status, so trying the BSD form and falling back printed several lines per marker on Linux. A failure here is logged and never fails the transcript sync; that host's spend then all goes to the source account, as before. A host with its own `remote_dir` gets no markers, since the script reads `~/.claude` and aimux's profiles, which need not be where its transcripts come from.
 
 ## Limits
@@ -189,7 +193,7 @@ Cache: `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`.
 
 - `ccmoneta install statusline` merges `statusLine` into Claude Code's `settings.json`: back it up first, refuse to replace a different existing status line without `--force`, write atomically, and re-parse the result before replacing the original.
 - `ccmoneta install i3blocks` and `ccmoneta install waybar` print a ready config block with this binary's absolute path. They do not edit the bar's config.
-- `ccmoneta doctor` checks ccusage, the credentials file (never printing the token), the cache directory, the config file, ssh and rsync reachability for each configured host, whether the status line is installed, and each job's last error.
+- `ccmoneta doctor` checks the model price list and names any model it has no price for, the credentials file (never printing the token), the cache directory, the config file, ssh and rsync reachability for each configured host, whether the status line is installed, and each job's last error.
 
 ## Bar output formats
 
@@ -205,17 +209,19 @@ Cache: `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`.
 - Hostname from the `gethostname` crate, not `/proc`.
 - A click on the i3blocks block opens the dashboard in `bar.terminal`, else `$TERMINAL`, else the first of `i3-sensible-terminal` and `x-terminal-emulator` on PATH. `i3-sensible-terminal` has its own search order, which can differ from the terminal in use (it tries xterm before alacritty), so `bar.terminal` is the dependable setting. Waybar clicks run the module's own `on-click`.
 - Linux is the tested platform. The dashboard and status line hook use nothing Linux-specific and are expected to work on macOS, but have not been run there. The bar targets Linux bars.
-- Runtime dependencies: `ccusage` (required for dollars), `curl` (limits when no status line is feeding them), and `ssh` plus `rsync` (sync only).
+- Runtime dependencies: `curl` (model prices, and limits when no status line is feeding them), and `ssh` plus `rsync` (sync only).
 
 ## Tests
 
 - Unit: the staleness policy, backoff arithmetic, config defaults and parsing, the today-cost date rule, the `settings.json` merge, sync path filtering and prune set, and the Waybar JSON.
-- Integration, against a throwaway `XDG_CACHE_HOME` and a fake ccusage:
+- Integration, against a throwaway `XDG_CACHE_HOME`, transcripts written by the test and a local price list (a fake curl where a test needs the download to fail or hang):
   - each surface alone from a cold start reaches correct numbers
   - many concurrent stale callers produce exactly one refresh run
   - the hook returns immediately while a refresh is in flight
   - a failing job backs off
   - a successful refresh signals a stand-in bar named in the config, and nothing else
+- Integration, ledger: appended turns are counted and a quiet run writes nothing to the ledger; a line still being written waits for its end; a transcript replaced under the same path is read again; a deleted one takes its spend with it; a reply copied into another transcript counts once at its largest; a ledger cut short by a crash recovers; a ledger mostly of dead lines is compacted; a failed price download keeps the last list; a model the list does not name is reported, not guessed.
+- Unit, pricing and deduplication: model matching (exact, dated, prefixed, never a newer version), the per-request formula with the above-200k tiers and one-hour writes, the line filter, advisor iterations, and the dedupe rules (largest copy wins, requestless ids per session, sidechain replays).
 - Unit, bar: the i3blocks lines, the Waybar JSON being a single line with the documented keys and classes, the level thresholds, the markers for missing limits and failing spend, and the terminal fallback order.
 - Integration, sync, against a fake remote reached through `CCMONETA_SSH` and real rsync:
   - recent transcripts are mirrored, and copies that aged out or vanished remotely are pruned

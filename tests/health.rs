@@ -35,13 +35,11 @@ impl Sandbox {
             "[health]\nmax_age_seconds = 3600\n",
         )
         .unwrap();
-        let fake = root.join("fake-ccusage");
         fs::write(
-            &fake,
-            "#!/bin/bash\ncase \"$1 $2\" in\n  \"--version \") echo 'ccusage 99.0.0' ;;\n  \"claude daily\") printf '{\"projects\":{}}' ;;\nesac\n",
+            root.join("prices.json"),
+            r#"{"m": {"input_cost_per_token": 1, "output_cost_per_token": 0}}"#,
         )
         .unwrap();
-        Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
         Sandbox { root }
     }
 
@@ -84,7 +82,10 @@ impl Sandbox {
             .env("HOME", self.root.join("home"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("CCMONETA_CCUSAGE", self.root.join("fake-ccusage"));
+            .env(
+                "CCMONETA_PRICES_URL",
+                format!("file://{}", self.root.join("prices.json").display()),
+            );
         c
     }
 

@@ -372,28 +372,6 @@ impl Owners {
         }
         owner
     }
-
-    /// Whether every turn of `session` goes to the default account, which a
-    /// session no other account has a marker for always does.
-    pub fn only_default(&self, session: &str) -> bool {
-        self.sessions
-            .get(session)
-            .is_none_or(|l| l.iter().all(|(_, a)| *a == self.default))
-    }
-
-    /// Every account a turn could go to.
-    pub fn accounts(&self) -> Vec<String> {
-        let mut all: Vec<String> = self
-            .sessions
-            .values()
-            .flatten()
-            .map(|(_, a)| a.clone())
-            .chain(std::iter::once(self.default.clone()))
-            .collect();
-        all.sort();
-        all.dedup();
-        all
-    }
 }
 
 /// This machine's owners, from every account's markers.
@@ -574,9 +552,6 @@ private:
         assert_eq!(o.at("s2", 150), "main");
         assert_eq!(o.at("s2", 250), "second", "handed over mid-session");
         assert_eq!(o.at("unknown", 0), "main");
-        assert!(!o.only_default("s1"));
-        assert!(o.only_default("unknown"));
-        assert_eq!(o.accounts(), ["main", "second"]);
     }
 
     #[test]

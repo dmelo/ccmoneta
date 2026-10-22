@@ -51,18 +51,12 @@ cd "$FAKE_REMOTE_HOME" && HOME="$FAKE_REMOTE_HOME" exec bash -c "$*"
 "#,
         )
         .unwrap();
-        let ccusage = root.join("fake-ccusage");
         fs::write(
-            &ccusage,
-            "#!/bin/bash\ncase \"$1 $2\" in \"claude daily\") printf '{\"projects\":{}}';; esac\n",
+            root.join("prices.json"),
+            r#"{"m": {"input_cost_per_token": 1, "output_cost_per_token": 0}}"#,
         )
         .unwrap();
-        Command::new("chmod")
-            .arg("+x")
-            .arg(&ssh)
-            .arg(&ccusage)
-            .status()
-            .unwrap();
+        Command::new("chmod").arg("+x").arg(&ssh).status().unwrap();
         Some(Sandbox { root })
     }
 
@@ -79,7 +73,10 @@ cd "$FAKE_REMOTE_HOME" && HOME="$FAKE_REMOTE_HOME" exec bash -c "$*"
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("CCMONETA_SSH", self.root.join("fake-ssh"))
-            .env("CCMONETA_CCUSAGE", self.root.join("fake-ccusage"))
+            .env(
+                "CCMONETA_PRICES_URL",
+                format!("file://{}", self.root.join("prices.json").display()),
+            )
             .env("FAKE_REMOTE_HOME", self.root.join("remote"));
         c
     }

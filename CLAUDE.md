@@ -21,7 +21,7 @@ The repo is published, so no commit message, comment, test or doc may contain re
 
 `cargo test` runs everything; no network and nothing of the user's is touched.
 
-- Integration tests run the real binary against a throwaway `HOME`, `XDG_CACHE_HOME` and `XDG_CONFIG_HOME`, with `CCMONETA_CCUSAGE` pointing at a fake ccusage and `CCMONETA_SSH` at a fake ssh that runs commands against a fake remote home. The sync tests need real `rsync`; they skip themselves without it, so check for a "skipping" line before believing they passed.
+- Integration tests run the real binary against a throwaway `HOME`, `XDG_CACHE_HOME` and `XDG_CONFIG_HOME`, with `CCMONETA_PRICES_URL` pointing at a local price list (or a fake curl on `PATH`) and `CCMONETA_SSH` at a fake ssh that runs commands against a fake remote home. The sync tests need real `rsync`; they skip themselves without it, so check for a "skipping" line before believing they passed.
 - The suite exercises guards, not just happy paths. Before trusting one, break it on purpose in a scratch copy and confirm its test fails. Every guard here was checked that way.
 - **After moving or copying this repo, run `cargo clean` first.** Integration tests reach the binary through `CARGO_BIN_EXE_ccmoneta`, an absolute path fixed when the test was compiled; a stale build runs the binary at the old path, which fails with "No such file or directory" or, worse, silently tests a different build.
 
@@ -31,7 +31,7 @@ rustup's minimal profile has no `rustfmt` or `clippy`: `rustup component add rus
 
 ## Surfaces and the cache
 
-Every surface reads `$XDG_CACHE_HOME/ccmoneta/` and starts a detached `ccmoneta refresh <job>` when a value is stale; jobs are single-flighted by a lock file each. Nothing in a surface may block on the network or on ccusage. Pricing stays ccusage's job; this repo carries no model price table, deliberately (see docs/decisions.md).
+Every surface reads `$XDG_CACHE_HOME/ccmoneta/` and starts a detached `ccmoneta refresh <job>` when a value is stale; jobs are single-flighted by a lock file each. Nothing in a surface may block on the network or on reading transcripts. Spend follows ccusage's rules and LiteLLM's price list, downloaded; this repo carries no model price table, deliberately, and a model without a price is reported, never guessed (see docs/decisions.md).
 
 ## After changing the binary
 

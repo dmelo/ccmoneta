@@ -1,19 +1,22 @@
-//! Dollar figures, delegated to ccusage.
+//! Dollar figures: the ledger's records, deduplicated, priced and added up.
 //!
-//! We deliberately do not carry our own model pricing table. CCMeter did, and
-//! it broke silently the moment Opus 5 shipped: its `model.contains(...)` match
-//! fell through to a Sonnet-rate fallback, so Opus usage was billed at 3/15
-//! instead of 5/25 with no warning anywhere in the UI. ccusage tracks pricing
-//! as its whole reason to exist, so we shell out and own only the layout.
+//! The records come from ledger.rs, which reads only what each transcript
+//! gained since the last run; prices come from prices.rs. What is done here
+//! follows ccusage, which ccmoneta used to run for these figures, so they
+//! agree with it: the same deduplication (one reply counted once, however many
+//! transcripts copied it), the same day boundaries (local time), and the same
+//! per-request formula. Each record then goes to the account that ran it, and
+//! is added to its day, model, project, machine and account.
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::accounts::{self, Owners};
 use crate::config::Config;
+use crate::ledger::{self, ANTHROPIC_ID, FAST, Rec, SIDECHAIN, SPEED};
+use crate::prices::{Prices, Tokens};
 use crate::store::{self, JobState};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -29,30 +32,9 @@ pub struct ModelBreakdown {
     pub cache_read_tokens: u64,
     #[serde(rename = "cacheCreationTokens", default)]
     pub cache_creation_tokens: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Entry {
-    /// The day, "YYYY-MM-DD". `ccusage claude` names it `date`; the all-agent
-    /// reports call it `period`.
-    #[serde(alias = "date")]
-    pub period: String,
-    #[serde(rename = "totalCost")]
-    pub total_cost: f64,
-    #[serde(rename = "totalTokens", default)]
-    pub total_tokens: u64,
-    #[serde(rename = "cacheReadTokens", default)]
-    pub cache_read_tokens: u64,
-    #[serde(rename = "modelBreakdowns", default)]
-    pub model_breakdowns: Vec<ModelBreakdown>,
-}
-
-/// `ccusage claude daily --instances`: each project's days, keyed by the
-/// project's transcript directory name.
-#[derive(Debug, Deserialize)]
-struct ProjectsReport {
-    #[serde(default)]
-    projects: HashMap<String, Vec<Entry>>,
+    /// The price list does not name this model, so its cost is counted as 0.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unpriced: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -81,6 +63,9 @@ pub struct Costs {
     /// Per Claude account over the window, descending by cost, named as on
     /// this machine (see accounts.rs). One unnamed entry without aimux.
     pub by_account: Vec<(String, f64)>,
+    /// Models used in the window that the price list does not name. Their
+    /// usage counts as $0, so every figure is low by their share.
+    pub unpriced: Vec<String>,
 }
 
 /// Models and projects for one day, or summed over the whole window.
@@ -174,56 +159,14 @@ pub fn hosts() -> Vec<Host> {
     hosts
 }
 
-/// `CCMONETA_CCUSAGE` overrides the executable, which is how the integration
-/// tests run against a fake ccusage with fixed output.
-pub fn ccusage_exe() -> std::ffi::OsString {
-    std::env::var_os("CCMONETA_CCUSAGE")
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "ccusage".into())
-}
-
-fn ccusage(args: &[&str], config_dir: &Path) -> Result<Vec<u8>, String> {
-    // One config directory per run. ccusage silently skips a CLAUDE_CONFIG_DIR
-    // that does not exist, so a host with no data on disk would still be
-    // listed as counted while contributing nothing; hosts() returns only
-    // directories that actually contain projects/ to rule that out.
-    let out = Command::new(ccusage_exe())
-        .args(args)
-        .env("CLAUDE_CONFIG_DIR", config_dir)
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "ccusage not found: install it with `npm install -g ccusage`, or set CCMONETA_CCUSAGE"
-                    .to_string()
-            } else {
-                format!("ccusage: {e}")
-            }
-        })?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let detail = stderr.lines().rev().find(|l| !l.trim().is_empty());
-        let command = args
-            .iter()
-            .take_while(|a| !a.starts_with('-'))
-            .copied()
-            .collect::<Vec<_>>()
-            .join(" ");
-        return Err(match detail {
-            Some(d) => format!("ccusage {command} exited {}: {}", out.status, d.trim()),
-            None => format!("ccusage {command} exited {}", out.status),
-        });
-    }
-    Ok(out.stdout)
-}
-
 /// A project's label: the last two segments of its transcript directory name.
 ///
-/// ccusage keys projects by that directory name, which is the absolute path
-/// with separators replaced by '-'. That is lossy (a real '-' in a path is
-/// indistinguishable from a separator), but "-home-me-code-project" reads
-/// better as "code/project" than as the whole path, and the label is only ever
-/// shown, never resolved back to a path. The same checkout lives under a
-/// different home path on each machine, so the label is also what merges it.
+/// Claude Code names that directory after the absolute path, with separators
+/// replaced by '-'. That is lossy (a real '-' in a path is indistinguishable
+/// from a separator), but "-home-me-code-project" reads better as
+/// "code/project" than as the whole path, and the label is only ever shown,
+/// never resolved back to a path. The same checkout lives under a different
+/// home path on each machine, so the label is also what merges it.
 fn project_label(dir: &str) -> String {
     dir.trim_matches('-')
         .rsplit('-')
@@ -246,6 +189,26 @@ fn by_cost_desc<T>(items: &mut [T], cost: impl Fn(&T) -> f64, name: impl Fn(&T) 
     });
 }
 
+/// One counted request, ready to add up.
+#[derive(Debug, Clone)]
+struct Use {
+    host: String,
+    /// The account key (see accounts::Account::key); names are put on at
+    /// the end, so two accounts that share a name are never added together.
+    account: String,
+    /// The transcript directory under `projects/`.
+    project: String,
+    /// "YYYY-MM-DD", local time.
+    date: String,
+    /// As ccusage shows it: with `-fast` for fast mode, None for a line that
+    /// names no model or the `<synthetic>` placeholder, which are counted in
+    /// the totals but get no row of their own.
+    model: Option<String>,
+    unpriced: bool,
+    cost: f64,
+    tokens: Tokens,
+}
+
 /// Models and projects summed over a set of days: the whole window, or one day.
 #[derive(Default)]
 struct Tally {
@@ -257,26 +220,27 @@ struct Tally {
 }
 
 impl Tally {
-    fn add(&mut self, host: &str, account: &str, project: &str, e: &Entry) {
-        *self.accounts.entry(account.to_string()).or_default() += e.total_cost;
-        for m in &e.model_breakdowns {
+    fn add(&mut self, project: &str, u: &Use) {
+        *self.accounts.entry(u.account.clone()).or_default() += u.cost;
+        if let Some(model) = &u.model {
             let slot = self
                 .models
-                .entry(m.model_name.clone())
+                .entry(model.clone())
                 .or_insert_with(|| ModelBreakdown {
-                    model_name: m.model_name.clone(),
+                    model_name: model.clone(),
                     ..Default::default()
                 });
-            slot.cost += m.cost;
-            slot.input_tokens += m.input_tokens;
-            slot.output_tokens += m.output_tokens;
-            slot.cache_read_tokens += m.cache_read_tokens;
-            slot.cache_creation_tokens += m.cache_creation_tokens;
+            slot.cost += u.cost;
+            slot.input_tokens += u.tokens.input;
+            slot.output_tokens += u.tokens.output;
+            slot.cache_read_tokens += u.tokens.cache_read;
+            slot.cache_creation_tokens += u.tokens.cache_5m + u.tokens.cache_1h;
+            slot.unpriced |= u.unpriced;
         }
         let slot = self.projects.entry(project.to_string()).or_default();
-        slot.0 += e.total_cost;
-        slot.1.insert(host.to_string());
-        self.cache_read_tokens += e.cache_read_tokens;
+        slot.0 += u.cost;
+        slot.1.insert(u.host.clone());
+        self.cache_read_tokens += u.tokens.cache_read;
     }
 
     fn finish(self) -> Day {
@@ -303,20 +267,12 @@ impl Tally {
     }
 }
 
-/// One ccusage report: a host's transcripts, or the part one account ran.
-struct Run {
-    host: String,
-    /// The account key (see accounts::Account::key); names are put on at
-    /// the end, so two accounts that share a name are never added together.
-    account: String,
-    report: ProjectsReport,
-}
-
-/// Fold every run's report into the dashboard's figures. The window runs from
-/// `first` to `today`, both included.
-fn assemble(runs: &[Run], first: NaiveDate, today: NaiveDate) -> Costs {
+/// Fold every counted request into the dashboard's figures. The window runs
+/// from `first` to `today`, both included; requests outside it are skipped.
+fn assemble(uses: &[Use], first: NaiveDate, today: NaiveDate) -> Costs {
     let key = |d: NaiveDate| d.format("%Y-%m-%d").to_string();
     let today_key = key(today);
+    let first_key = key(first);
     let week_start = key(today - chrono::Duration::days(6));
 
     let mut costs = Costs::default();
@@ -324,41 +280,35 @@ fn assemble(runs: &[Run], first: NaiveDate, today: NaiveDate) -> Costs {
     let mut days: BTreeMap<String, Tally> = BTreeMap::new();
     let mut by_day: HashMap<String, f64> = HashMap::new();
     let mut by_host: HashMap<String, f64> = HashMap::new();
-    for Run {
-        host,
-        account,
-        report,
-    } in runs
-    {
-        let host_total = by_host.entry(host.clone()).or_default();
-        for (dir, entries) in &report.projects {
-            let project = project_label(dir);
-            for e in entries {
-                *host_total += e.total_cost;
-                *by_day.entry(e.period.clone()).or_default() += e.total_cost;
-                if e.period == today_key {
-                    costs.today += e.total_cost;
-                }
-                if e.period >= week_start {
-                    costs.week += e.total_cost;
-                }
-                // ccusage was asked for exactly the window, so every entry is in it.
-                costs.window += e.total_cost;
-                costs.total_tokens += e.total_tokens;
-                window.add(host, account, &project, e);
-                days.entry(e.period.clone())
-                    .or_default()
-                    .add(host, account, &project, e);
-            }
+    let mut unpriced: BTreeSet<String> = BTreeSet::new();
+    for u in uses {
+        if u.date < first_key || u.date > today_key {
+            continue;
         }
+        let project = project_label(&u.project);
+        *by_host.entry(u.host.clone()).or_default() += u.cost;
+        *by_day.entry(u.date.clone()).or_default() += u.cost;
+        if u.date == today_key {
+            costs.today += u.cost;
+        }
+        if u.date >= week_start {
+            costs.week += u.cost;
+        }
+        costs.window += u.cost;
+        costs.total_tokens += u.tokens.total();
+        if u.unpriced
+            && let Some(m) = &u.model
+        {
+            unpriced.insert(m.clone());
+        }
+        window.add(&project, u);
+        days.entry(u.date.clone()).or_default().add(&project, u);
     }
     costs.by_host = by_host.into_iter().collect();
     by_cost_desc(&mut costs.by_host, |h| h.1, |h| &h.0);
 
-    // ccusage omits days with no usage, so its entries are not a calendar:
-    // shown as-is, the days on either side of a gap sit next to each other
-    // (Aug 22 directly before Aug 26, with Aug 23-25 simply absent). Rebuild
-    // the series with one row per calendar day from `first` to today.
+    // Rebuild the series with one row per calendar day from `first` to today,
+    // so a day without usage shows as an empty day rather than as a gap.
     let mut day = first;
     while day <= today {
         let k = key(day);
@@ -373,82 +323,384 @@ fn assemble(runs: &[Run], first: NaiveDate, today: NaiveDate) -> Costs {
     costs.cache_read_tokens = whole.cache_read_tokens;
     costs.by_account = whole.by_account;
     costs.days = days.into_iter().map(|(d, t)| (d, t.finish())).collect();
+    costs.unpriced = unpriced.into_iter().collect();
     costs
 }
 
-/// Gather the last `days` of cost data across every host (see `hosts`).
+// -------------------------------------------------------------- deduplication
+
+/// What deduplication looks at in a record.
+#[derive(Debug, Clone, Copy)]
+struct Cand {
+    message: u64,
+    request: u64,
+    session: u64,
+    ts: i64,
+    sidechain: bool,
+    anthropic: bool,
+    speed: bool,
+    total: u64,
+    cost: f64,
+}
+
+/// The exact key ccusage files a record under: message and request, plus the
+/// session when there is no request id, plus the time when the message id is
+/// not an Anthropic one either.
+fn exact_key(c: &Cand) -> (u64, u64, u64, i64) {
+    let (session, ts) = match (c.request, c.anthropic) {
+        (0, true) => (c.session, 0),
+        (0, false) => (c.session, c.ts),
+        _ => (0, 0),
+    };
+    (c.message, c.request, session, ts)
+}
+
+/// Whether ccusage replaces the copy it kept with this one: a main-chain copy
+/// beats a sidechain one, then more tokens, then a higher cost, then one that
+/// names its speed.
+fn replaces(new: &Cand, kept: &Cand) -> bool {
+    if new.sidechain != kept.sidechain {
+        return kept.sidechain;
+    }
+    if new.total != kept.total {
+        return new.total > kept.total;
+    }
+    if new.cost != kept.cost {
+        return new.cost > kept.cost;
+    }
+    new.speed && !kept.speed
+}
+
+/// A replay route: its kind, the message, and the session.
+type Route = (u8, u64, u64);
+
+/// The records ccusage would count, by index, with its rules: in reading
+/// order, a record that matches one already kept, by exact key or by a
+/// sidechain replaying a message of the same session, replaces it or is
+/// dropped (see `replaces`). Records without a message id are all kept.
 ///
-/// One ccusage run per host, in parallel: the daily report split by project
-/// (`--instances`), with models (`--breakdown`). That one report yields the
-/// daily series, the models and the projects, for the window and for each
-/// day, so they all add up to the header by construction. Projects used to
-/// come from the session report, whose figures came out materially higher
-/// than the daily totals over the same window. A run takes on the order of a
-/// second per host, which is why they run in parallel.
+/// A port of ccusage's `push_deduped_daily_entry`. Route kinds: 0 indexes
+/// every kept record, for sidechain candidates; 1 only sidechain ones, for
+/// main-chain candidates.
+fn dedupe(cands: &[Cand]) -> Vec<usize> {
+    let mut kept: Vec<usize> = Vec::new();
+    let mut exact: HashMap<(u64, u64, u64, i64), Vec<usize>> = HashMap::new();
+    let mut routes: HashMap<Route, Vec<(usize, Option<u64>)>> = HashMap::new();
+    for (i, c) in cands.iter().enumerate() {
+        if c.message == 0 {
+            kept.push(i);
+            continue;
+        }
+        let key = exact_key(c);
+        let by_key = exact.get(&key).and_then(|slots| {
+            slots.iter().copied().find(|&s| {
+                let e = &cands[kept[s]];
+                e.message == c.message
+                    && e.request == c.request
+                    && (c.request != 0 || (e.session == c.session && (c.anthropic || e.ts == c.ts)))
+            })
+        });
+        let found = by_key.or_else(|| {
+            let kind = u8::from(!c.sidechain);
+            routes.get(&(kind, c.message, c.session)).and_then(|v| {
+                v.iter().find_map(|&(s, alias)| {
+                    let e = &cands[kept[s]];
+                    (e.message == c.message
+                        && alias.unwrap_or(e.session) == c.session
+                        && (c.sidechain || e.sidechain))
+                        .then_some(s)
+                })
+            })
+        });
+        match found {
+            Some(slot) => {
+                let prev = cands[kept[slot]];
+                if prev.session != c.session {
+                    for session in [c.session, prev.session] {
+                        for kind in [0, 1] {
+                            routes
+                                .entry((kind, c.message, session))
+                                .or_default()
+                                .push((slot, Some(session)));
+                        }
+                    }
+                }
+                if replaces(c, &prev) {
+                    kept[slot] = i;
+                    if exact_key(&prev) != key {
+                        exact.entry(key).or_default().push(slot);
+                    }
+                    let moved = prev.session != c.session
+                        || prev.sidechain != c.sidechain
+                        || prev.message != c.message;
+                    if moved {
+                        routes
+                            .entry((0, c.message, c.session))
+                            .or_default()
+                            .push((slot, None));
+                        if c.sidechain {
+                            routes
+                                .entry((1, c.message, c.session))
+                                .or_default()
+                                .push((slot, None));
+                        }
+                    }
+                }
+            }
+            None => {
+                let slot = kept.len();
+                kept.push(i);
+                exact.entry(key).or_default().push(slot);
+                routes
+                    .entry((0, c.message, c.session))
+                    .or_default()
+                    .push((slot, None));
+                if c.sidechain {
+                    routes
+                        .entry((1, c.message, c.session))
+                        .or_default()
+                        .push((slot, None));
+                }
+            }
+        }
+    }
+    kept
+}
+
+// ------------------------------------------------------------------- sources
+
+/// Who a root's turns belong to.
+enum Attribution {
+    /// A host's shared transcripts: per session, by markers.
+    Owners(Owners),
+    /// An isolated aimux profile's own `projects/`: all of it one account's.
+    Account(String),
+}
+
+/// A `projects/` directory to read, and whose usage it holds.
+struct Root {
+    projects: PathBuf,
+    host: String,
+    who: Attribution,
+}
+
+impl Root {
+    fn account(&self, session: &str, at: i64) -> String {
+        match &self.who {
+            Attribution::Owners(o) => o.at(session, at).to_string(),
+            Attribution::Account(a) => a.clone(),
+        }
+    }
+}
+
+/// Every `projects/` to count, and each account's name by key. Names are this
+/// machine's profile names; an account only another machine has is named as
+/// that machine names it.
+fn roots(hosts: &[Host]) -> (Vec<Root>, HashMap<String, String>) {
+    let local = accounts::local();
+    let mut names: HashMap<String, String> =
+        local.iter().map(|a| (a.key(), a.name.clone())).collect();
+    let local_default = local
+        .iter()
+        .find(|a| a.source)
+        .or(local.first())
+        .map(accounts::Account::key)
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for host in hosts {
+        let owners = if host.remote {
+            match std::fs::read_to_string(crate::sync::markers_path(&host.name)) {
+                Ok(text) => {
+                    let (remote, owners) = accounts::parse_remote_markers(&text);
+                    for r in remote {
+                        let name = names.entry(r.key).or_default();
+                        if name.is_empty() {
+                            *name = r.name;
+                        }
+                    }
+                    owners
+                }
+                // Not synced since accounts existed: all of it is the source
+                // account's, which is how it was counted before.
+                Err(_) => Owners::new(local_default.clone()),
+            }
+        } else {
+            accounts::local_owners(&local)
+        };
+        out.push(Root {
+            projects: host.config_dir.join("projects"),
+            host: host.name.clone(),
+            who: Attribution::Owners(owners),
+        });
+    }
+    // A profile isolated with `aimux migrate isolate` keeps its transcripts in
+    // a projects/ of its own instead of the shared one, so nothing above reads
+    // them; every turn there is that account's.
+    if let Some(host) = hosts.iter().find(|h| !h.remote) {
+        for a in local.iter().filter(|a| !a.source) {
+            let dir = a.config_dir.join("projects");
+            if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+                out.push(Root {
+                    projects: dir,
+                    host: host.name.clone(),
+                    who: Attribution::Account(a.key()),
+                });
+            }
+        }
+    }
+    (out, names)
+}
+
+/// The session a transcript belongs to for attribution: the first part of its
+/// path below the project, which is `<session>.jsonl` for a session's own
+/// transcript and `<session>/` for its subagents'.
+fn marker_session(rel: &Path) -> Option<String> {
+    rel.components().nth(1).map(|c| {
+        c.as_os_str()
+            .to_string_lossy()
+            .trim_end_matches(".jsonl")
+            .to_string()
+    })
+}
+
+/// Price, deduplicate and attribute the ledger's records.
+fn uses(ledger: &ledger::Ledger, roots: &[Root], prices: &Prices) -> Vec<Use> {
+    struct FileInfo<'a> {
+        root: &'a Root,
+        project: String,
+        session: String,
+        marker_session: String,
+        path: String,
+    }
+    let info: HashMap<u32, FileInfo> = ledger
+        .files
+        .values()
+        .filter_map(|f| {
+            let root = roots.iter().find(|r| f.path.starts_with(&r.projects))?;
+            let rel = f.path.strip_prefix(&root.projects).ok()?;
+            let project = rel
+                .components()
+                .next()?
+                .as_os_str()
+                .to_string_lossy()
+                .into_owned();
+            Some((
+                f.id,
+                FileInfo {
+                    root,
+                    project,
+                    session: f.session.clone(),
+                    marker_session: marker_session(rel).unwrap_or_default(),
+                    path: f.path.to_string_lossy().into_owned(),
+                },
+            ))
+        })
+        .collect();
+
+    // ccusage's reading order: files by path, then lines in order.
+    let mut recs: Vec<&Rec> = ledger
+        .records
+        .iter()
+        .filter(|r| info.contains_key(&r.file))
+        .collect();
+    recs.sort_by(|a, b| {
+        info[&a.file]
+            .path
+            .cmp(&info[&b.file].path)
+            .then(a.off.cmp(&b.off))
+    });
+
+    // A model the list lacks is looked for across every entry, so each name is
+    // looked up once, not once per record.
+    let mut rates: HashMap<&str, Option<&crate::prices::Rate>> = HashMap::new();
+    let priced: Vec<(f64, bool)> = recs
+        .iter()
+        .map(|r| {
+            if let Some(c) = r.cost_usd {
+                return (c, false);
+            }
+            let rate = r
+                .model
+                .as_deref()
+                .and_then(|m| *rates.entry(m).or_insert_with(|| prices.find(m)));
+            match rate {
+                Some(rate) => (rate.cost(&r.tokens, r.is(FAST)), false),
+                None => (0.0, r.tokens.total() > 0),
+            }
+        })
+        .collect();
+    let cands: Vec<Cand> = recs
+        .iter()
+        .zip(&priced)
+        .map(|(r, (cost, _))| Cand {
+            message: r.message,
+            request: r.request,
+            session: ledger::hash(
+                r.session
+                    .as_deref()
+                    .unwrap_or(&info[&r.file].session)
+                    .as_bytes(),
+            ),
+            ts: r.ts,
+            sidechain: r.is(SIDECHAIN),
+            anthropic: r.is(ANTHROPIC_ID),
+            speed: r.is(SPEED),
+            total: r.tokens.total(),
+            cost: *cost,
+        })
+        .collect();
+
+    dedupe(&cands)
+        .into_iter()
+        .filter_map(|i| {
+            let r = recs[i];
+            let f = &info[&r.file];
+            let at = chrono::Local.timestamp_millis_opt(r.ts).single()?;
+            let model = r.model.as_deref().filter(|m| *m != "<synthetic>").map(|m| {
+                if r.is(FAST) {
+                    format!("{m}-fast")
+                } else {
+                    m.to_string()
+                }
+            });
+            Some(Use {
+                host: f.root.host.clone(),
+                account: f.root.account(&f.marker_session, r.ts.div_euclid(1000)),
+                project: f.project.clone(),
+                date: at.format("%Y-%m-%d").to_string(),
+                unpriced: priced[i].1 && model.is_some(),
+                model,
+                cost: priced[i].0,
+                tokens: r.tokens,
+            })
+        })
+        .collect()
+}
+
+/// Gather the last `days` of cost data across every host (see `hosts`).
 pub fn gather(days: i64) -> Result<Costs, String> {
     let today = chrono::Local::now().date_naive();
     // A `days`-day window includes today, so it starts `days - 1` days back;
     // starting `days` back would quietly make every "30d" figure cover 31.
     let first = today - chrono::Duration::days(days - 1);
-    let since = first.format("%Y%m%d").to_string();
-    let hosts = hosts();
     let window_start = first
         .and_hms_opt(0, 0, 0)
         .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
         .map_or(0, |t| t.timestamp());
-    let (sources, names) = sources(&hosts, window_start)?;
+    let hosts = hosts();
+    let (roots, names) = roots(&hosts);
+    // Before the ledger, ccmoneta kept per-account copies of transcripts here.
+    let _ = std::fs::remove_dir_all(store::cache_dir().join("views"));
 
-    // A source with no usage in the window still exits 0 with an empty list,
-    // so a quiet machine or account does not fail the whole report.
-    let reports: Vec<Result<ProjectsReport, String>> = std::thread::scope(|s| {
-        let workers: Vec<_> = sources
-            .iter()
-            .map(|src| {
-                let since = since.as_str();
-                s.spawn(move || -> Result<ProjectsReport, String> {
-                    // `claude daily`, not `daily`: in ccusage 20 the bare
-                    // report covers every agent CLI it finds (OpenCode, Codex,
-                    // ...) on this machine, whatever CLAUDE_CONFIG_DIR says, so
-                    // this machine's other agents would be added once per host.
-                    let raw = ccusage(
-                        &[
-                            "claude",
-                            "daily",
-                            "--json",
-                            "--breakdown",
-                            "--instances",
-                            "--since",
-                            since,
-                        ],
-                        &src.config_dir,
-                    )?;
-                    serde_json::from_slice(&raw)
-                        .map_err(|e| format!("daily JSON from {}: {e}", src.host))
-                })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .map(|w| {
-                w.join()
-                    .unwrap_or_else(|_| Err("daily worker panicked".into()))
-            })
-            .collect()
-    });
-    let runs = sources
-        .into_iter()
-        .zip(reports)
-        .map(|(src, r)| {
-            r.map(|report| Run {
-                account: src.account,
-                host: src.host,
-                report,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let prices = crate::prices::load()?;
+    let dirs: Vec<PathBuf> = roots.iter().map(|r| r.projects.clone()).collect();
+    // A day's margin, as ccusage takes: a transcript last written just before
+    // the window can hold nothing in it, but its copies can.
+    let ledger = ledger::update(&dirs, window_start - 86_400)?;
+    let uses = uses(&ledger, &roots, &prices);
 
-    let mut costs = assemble(&runs, first, today);
-    let labels = account_labels(&names, runs.iter().map(|r| r.account.as_str()));
+    let mut costs = assemble(&uses, first, today);
+    let labels = account_labels(&names, uses.iter().map(|u| u.account.as_str()));
     let label = |key: &mut String| {
         if let Some(l) = labels.get(key.as_str()) {
             *key = l.clone();
@@ -491,224 +743,6 @@ fn account_labels<'a>(
             (k.to_string(), label)
         })
         .collect()
-}
-
-/// Where one ccusage run reads: a host's own config directory, or the view of
-/// it that holds one account's transcripts.
-struct Source {
-    host: String,
-    /// The account key (see accounts::Account::key).
-    account: String,
-    config_dir: PathBuf,
-}
-
-/// What to run ccusage on, and each account's name by key.
-///
-/// A host whose sessions all belong to one account is read in place, as before
-/// accounts existed. A host where several accounts ran sessions is split into
-/// one view per account (see `split`). Names are this machine's profile names;
-/// an account only another machine has is named as that machine names it.
-fn sources(
-    hosts: &[Host],
-    window_start: i64,
-) -> Result<(Vec<Source>, HashMap<String, String>), String> {
-    let local = accounts::local();
-    let mut names: HashMap<String, String> =
-        local.iter().map(|a| (a.key(), a.name.clone())).collect();
-    let local_default = local
-        .iter()
-        .find(|a| a.source)
-        .or(local.first())
-        .map(accounts::Account::key)
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for host in hosts {
-        let owners = if host.remote {
-            match std::fs::read_to_string(crate::sync::markers_path(&host.name)) {
-                Ok(text) => {
-                    let (remote, owners) = accounts::parse_remote_markers(&text);
-                    for r in remote {
-                        let name = names.entry(r.key).or_default();
-                        if name.is_empty() {
-                            *name = r.name;
-                        }
-                    }
-                    owners
-                }
-                // Not synced since accounts existed: all of it is the source
-                // account's, which is how it was counted before.
-                Err(_) => Owners::new(local_default.clone()),
-            }
-        } else {
-            accounts::local_owners(&local)
-        };
-        if owners.accounts().len() <= 1 {
-            out.push(Source {
-                host: host.name.clone(),
-                account: owners.default.clone(),
-                config_dir: host.config_dir.clone(),
-            });
-        } else {
-            out.extend(split(host, &owners, window_start)?);
-        }
-    }
-    // A profile isolated with `aimux migrate isolate` keeps its transcripts in
-    // a projects/ of its own instead of the shared one, so nothing above reads
-    // them; every turn there is that account's.
-    let local_host = hosts.iter().find(|h| !h.remote).map(|h| h.name.clone());
-    for a in local.iter().filter(|a| !a.source) {
-        let dir = a.config_dir.join("projects");
-        let own = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir());
-        if let (true, Some(host)) = (own, &local_host) {
-            out.push(Source {
-                host: host.clone(),
-                account: a.key(),
-                config_dir: a.config_dir.clone(),
-            });
-        }
-    }
-    Ok((out, names))
-}
-
-/// Split a host's transcripts into one view per account, under
-/// `<cache>/views/<host>/<account>/projects/`, rebuilt on every run.
-///
-/// A session only the default account ran is hard-linked whole into that
-/// account's view; ccusage ignores symlinks, and a hard link costs nothing on
-/// the same filesystem (it is copied otherwise). A session another account had
-/// a hand in is split line by line, each line going to the account that ran it
-/// at its timestamp (see accounts::Owners). Transcripts last written before the
-/// window cannot hold any of its usage, so they are left out.
-fn split(host: &Host, owners: &Owners, window_start: i64) -> Result<Vec<Source>, String> {
-    let root = store::cache_dir().join("views").join(&host.name);
-    let _ = std::fs::remove_dir_all(&root);
-    let keys = owners.accounts();
-    let view = |key: &str| root.join(accounts::file_name(key));
-    for k in &keys {
-        let dir = view(k).join("projects");
-        std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
-    }
-    let projects = host.config_dir.join("projects");
-    for file in transcripts(&projects) {
-        let fresh = std::fs::metadata(&file)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .is_some_and(|d| d.as_secs() as i64 >= window_start);
-        let Ok(rel) = file.strip_prefix(&projects) else {
-            continue;
-        };
-        // <project>/<session>.jsonl, or <project>/<session>/subagents/...
-        let Some(session) = rel.components().nth(1).map(|c| {
-            c.as_os_str()
-                .to_string_lossy()
-                .trim_end_matches(".jsonl")
-                .to_string()
-        }) else {
-            continue;
-        };
-        if !fresh {
-            continue;
-        }
-        if owners.only_default(&session) {
-            link_or_copy(&file, &view(&owners.default).join("projects").join(rel))?;
-        } else {
-            split_file(&file, rel, &session, owners, &view)?;
-        }
-    }
-    Ok(keys
-        .into_iter()
-        .map(|k| Source {
-            host: host.name.clone(),
-            config_dir: view(&k),
-            account: k,
-        })
-        .collect())
-}
-
-/// Every `*.jsonl` under `root`, at any depth, not following symlinks.
-fn transcripts(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let Ok(kind) = e.file_type() else {
-                continue;
-            };
-            let path = e.path();
-            if kind.is_dir() {
-                stack.push(path);
-            } else if kind.is_file() && path.extension().is_some_and(|x| x == "jsonl") {
-                out.push(path);
-            }
-        }
-    }
-    out
-}
-
-fn link_or_copy(from: &Path, to: &Path) -> Result<(), String> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("creating {}: {e}", parent.display()))?;
-    }
-    match std::fs::hard_link(from, to).or_else(|_| std::fs::copy(from, to).map(|_| ())) {
-        Ok(()) => Ok(()),
-        // Claude Code removed it since the listing: there is nothing to count.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("linking {} into a view: {e}", from.display())),
-    }
-}
-
-/// Write each account's lines of one transcript into its view. A line with no
-/// timestamp goes with the line before it.
-///
-/// Lines are handled as bytes and copied as they are, so a line Claude Code is
-/// still writing, which can end inside a multi-byte character, reaches ccusage
-/// exactly as it would have unsplit; ccusage skips what does not parse. A file
-/// removed since the listing is skipped.
-fn split_file(
-    file: &Path,
-    rel: &Path,
-    session: &str,
-    owners: &Owners,
-    view: &dyn Fn(&str) -> PathBuf,
-) -> Result<(), String> {
-    #[derive(Deserialize)]
-    struct Stamp {
-        timestamp: Option<String>,
-    }
-    let bytes = match std::fs::read(file) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("reading {}: {e}", file.display())),
-    };
-    let mut parts: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut owner = owners.default.clone();
-    for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-        let at = serde_json::from_slice::<Stamp>(line)
-            .ok()
-            .and_then(|s| s.timestamp)
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
-            .map(|t| t.timestamp());
-        if let Some(at) = at {
-            owner = owners.at(session, at).to_string();
-        }
-        let part = parts.entry(owner.clone()).or_default();
-        part.extend_from_slice(line);
-        part.push(b'\n');
-    }
-    for (account, body) in parts {
-        let to = view(&account).join("projects").join(rel);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("creating {}: {e}", parent.display()))?;
-        }
-        std::fs::write(&to, body).map_err(|e| format!("writing {}: {e}", to.display()))?;
-    }
-    Ok(())
 }
 
 pub fn cache_path() -> PathBuf {
@@ -848,26 +882,20 @@ mod tests {
         assert_eq!(back.costs.today, 12.34);
     }
 
-    fn entry(date: &str, cost: f64, model: &str) -> Entry {
-        Entry {
-            period: date.into(),
-            total_cost: cost,
-            total_tokens: 100,
-            cache_read_tokens: 10,
-            model_breakdowns: vec![ModelBreakdown {
-                model_name: model.into(),
-                cost,
+    fn used(host: &str, account: &str, project: &str, date: &str, cost: f64, model: &str) -> Use {
+        Use {
+            host: host.into(),
+            account: account.into(),
+            project: project.into(),
+            date: date.into(),
+            model: Some(model.into()),
+            unpriced: false,
+            cost,
+            tokens: Tokens {
+                input: 90,
+                cache_read: 10,
                 ..Default::default()
-            }],
-        }
-    }
-
-    fn report(projects: &[(&str, Vec<Entry>)]) -> ProjectsReport {
-        ProjectsReport {
-            projects: projects
-                .iter()
-                .map(|(dir, es)| (dir.to_string(), es.clone()))
-                .collect(),
+            },
         }
     }
 
@@ -880,41 +908,51 @@ mod tests {
 
     #[test]
     fn days_hold_their_own_models_and_projects_and_add_up() {
-        let reports = vec![
-            (
-                "desk".to_string(),
-                report(&[
-                    (
-                        "-home-me-code-alpha",
-                        vec![
-                            entry("2026-09-14", 1.0, "claude-opus-5"),
-                            entry("2026-09-15", 2.0, "claude-opus-5-5"),
-                        ],
-                    ),
-                    (
-                        "-home-me-code-beta",
-                        vec![entry("2026-09-15", 4.0, "claude-sonnet-5-5")],
-                    ),
-                ]),
+        let uses = vec![
+            used(
+                "desk",
+                "",
+                "-home-me-code-alpha",
+                "2026-09-14",
+                1.0,
+                "claude-opus-5",
             ),
-            (
-                "laptop".to_string(),
-                // The same checkout under another home path merges with desk's.
-                report(&[(
-                    "-Users-me-code-alpha",
-                    vec![entry("2026-09-15", 8.0, "claude-opus-5-5")],
-                )]),
+            used(
+                "desk",
+                "",
+                "-home-me-code-alpha",
+                "2026-09-15",
+                2.0,
+                "claude-opus-5-5",
+            ),
+            used(
+                "desk",
+                "",
+                "-home-me-code-beta",
+                "2026-09-15",
+                4.0,
+                "claude-sonnet-5-5",
+            ),
+            // The same checkout under another home path merges with desk's.
+            used(
+                "laptop",
+                "",
+                "-Users-me-code-alpha",
+                "2026-09-15",
+                8.0,
+                "claude-opus-5-5",
+            ),
+            // Outside the window: not counted anywhere.
+            used(
+                "desk",
+                "",
+                "-home-me-code-alpha",
+                "2026-09-11",
+                100.0,
+                "claude-opus-5",
             ),
         ];
-        let runs: Vec<Run> = reports
-            .into_iter()
-            .map(|(host, report)| Run {
-                host,
-                account: String::new(),
-                report,
-            })
-            .collect();
-        let c = assemble(&runs, day("2026-09-12"), day("2026-09-15"));
+        let c = assemble(&uses, day("2026-09-12"), day("2026-09-15"));
 
         assert_eq!(c.today, 14.0);
         assert_eq!(c.window, 15.0);
@@ -931,8 +969,6 @@ mod tests {
             c.by_host,
             vec![("laptop".to_string(), 8.0), ("desk".to_string(), 7.0)]
         );
-
-        // Days with no usage have no entry; the dashboard shows them as empty.
         assert_eq!(
             c.days.keys().collect::<Vec<_>>(),
             ["2026-09-14", "2026-09-15"]
@@ -941,7 +977,6 @@ mod tests {
         let monday = &c.days["2026-09-14"];
         assert_eq!(monday.models.len(), 1);
         assert_eq!(monday.models[0].model_name, "claude-opus-5");
-        assert_eq!(monday.projects.len(), 1);
         assert_eq!(monday.projects[0].name, "code/alpha");
         assert_eq!(monday.projects[0].hosts, ["desk"]);
 
@@ -973,46 +1008,33 @@ mod tests {
         );
         assert_eq!(tuesday.cache_read_tokens, 30);
 
-        // The window still sums every day.
         assert_eq!(c.projects[0].name, "code/alpha");
         assert_eq!(c.projects[0].cost, 11.0);
         assert_eq!(c.models.iter().map(|m| m.cost).sum::<f64>(), 15.0);
         assert_eq!(c.cache_read_tokens, 40);
+        assert_eq!(c.total_tokens, 400);
     }
 
     #[test]
     fn accounts_add_up_per_day_and_over_the_window() {
-        let run = |host: &str, account: &str, entries: Vec<Entry>| Run {
-            host: host.into(),
-            account: account.into(),
-            report: report(&[("-home-me-code-alpha", entries)]),
-        };
-        let runs = vec![
-            run(
-                "desk",
-                "main",
-                vec![
-                    entry("2026-09-14", 1.0, "claude-opus-5-5"),
-                    entry("2026-09-15", 2.0, "claude-opus-5-5"),
-                ],
-            ),
-            run(
-                "desk",
-                "second",
-                vec![entry("2026-09-15", 4.0, "claude-opus-5-5")],
-            ),
-            run(
+        let uses = vec![
+            used("desk", "main", "-p", "2026-09-14", 1.0, "claude-opus-5-5"),
+            used("desk", "main", "-p", "2026-09-15", 2.0, "claude-opus-5-5"),
+            used("desk", "second", "-p", "2026-09-15", 4.0, "claude-opus-5-5"),
+            used(
                 "laptop",
                 "second",
-                vec![entry("2026-09-15", 8.0, "claude-opus-5-5")],
+                "-p",
+                "2026-09-15",
+                8.0,
+                "claude-opus-5-5",
             ),
         ];
-        let c = assemble(&runs, day("2026-09-14"), day("2026-09-15"));
+        let c = assemble(&uses, day("2026-09-14"), day("2026-09-15"));
         assert_eq!(
             c.by_account,
             vec![("second".to_string(), 12.0), ("main".to_string(), 3.0)]
         );
-        // A host's total counts every account that ran there.
         assert_eq!(
             c.by_host,
             vec![("laptop".to_string(), 8.0), ("desk".to_string(), 7.0)]
@@ -1029,64 +1051,70 @@ mod tests {
     }
 
     #[test]
-    fn a_split_session_sends_each_line_to_the_account_that_ran_it() {
-        let dir = std::env::temp_dir().join(format!("ccmoneta-split-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let file = dir.join("in.jsonl");
-        std::fs::create_dir_all(&dir).unwrap();
-        // Epoch 1_800_000_000 is 2027-01-15T08:00:00Z.
-        std::fs::write(
-            &file,
-            "{\"timestamp\":\"2027-01-15T07:59:00Z\",\"n\":1}\n\
-             {\"n\":2}\n\
-             {\"timestamp\":\"2027-01-15T08:01:00Z\",\"n\":3}\n",
-        )
-        .unwrap();
-        let mut owners = Owners::new("main".into());
-        owners.add("s1", 1_800_000_000, "second");
-        let view = |k: &str| dir.join(k);
-        split_file(&file, Path::new("p/s1.jsonl"), "s1", &owners, &view).unwrap();
-        let read =
-            |k: &str| std::fs::read_to_string(dir.join(k).join("projects/p/s1.jsonl")).unwrap();
-        assert_eq!(
-            read("main"),
-            "{\"timestamp\":\"2027-01-15T07:59:00Z\",\"n\":1}\n{\"n\":2}\n",
-            "a line with no timestamp stays with the one before"
-        );
-        assert_eq!(
-            read("second"),
-            "{\"timestamp\":\"2027-01-15T08:01:00Z\",\"n\":3}\n"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+    fn unpriced_models_are_named_and_rows_without_a_model_still_count() {
+        let mut free = used("desk", "", "-p", "2026-09-15", 0.0, "vendor/free-model");
+        free.unpriced = true;
+        let mut synthetic = used("desk", "", "-p", "2026-09-15", 0.5, "x");
+        synthetic.model = None;
+        let c = assemble(&[free, synthetic], day("2026-09-15"), day("2026-09-15"));
+        assert_eq!(c.unpriced, ["vendor/free-model"]);
+        assert!(c.models[0].unpriced);
+        assert_eq!(c.models.len(), 1, "no row for a line without a model");
+        assert_eq!(c.today, 0.5, "but its cost is in the totals");
+    }
+
+    fn cand(message: u64, request: u64, session: u64, total: u64) -> Cand {
+        Cand {
+            message,
+            request,
+            session,
+            ts: 0,
+            sidechain: false,
+            anthropic: true,
+            speed: true,
+            total,
+            cost: total as f64,
+        }
     }
 
     #[test]
-    fn splitting_keeps_bytes_as_they_are_and_skips_a_vanished_file() {
-        let dir = std::env::temp_dir().join(format!("ccmoneta-bytes-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("in.jsonl");
-        // A complete line, then one cut off inside a two-byte character.
-        let body: Vec<u8> = [
-            b"{\"timestamp\":\"2027-01-15T07:59:00Z\"}\n".as_slice(),
-            b"{\"t\":\"\xc3",
-        ]
-        .concat();
-        std::fs::write(&file, &body).unwrap();
-        let owners = Owners::new("main".into());
-        let view = |k: &str| dir.join(k);
-        split_file(&file, Path::new("p/s.jsonl"), "s", &owners, &view).unwrap();
-        let out = std::fs::read(dir.join("main/projects/p/s.jsonl")).unwrap();
-        assert_eq!(out, [body.as_slice(), b"\n"].concat());
-        split_file(
-            &dir.join("gone.jsonl"),
-            Path::new("p/g.jsonl"),
-            "g",
-            &owners,
-            &view,
-        )
-        .unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+    fn a_reply_copied_into_several_transcripts_counts_once_at_its_largest() {
+        // The same reply in two sessions (a resumed one copies its history),
+        // the second copy with more tokens; and another reply.
+        let kept = dedupe(&[cand(1, 7, 100, 5), cand(2, 8, 100, 3), cand(1, 7, 200, 9)]);
+        assert_eq!(kept, [2, 1], "the larger copy takes the first one's place");
+        // Equal copies: the first read stays.
+        assert_eq!(dedupe(&[cand(1, 7, 100, 5), cand(1, 7, 200, 5)]), [0]);
+    }
+
+    #[test]
+    fn without_a_request_id_a_reply_is_the_same_only_within_its_session() {
+        let kept = dedupe(&[cand(1, 0, 100, 5), cand(1, 0, 200, 5), cand(1, 0, 100, 6)]);
+        assert_eq!(kept, [2, 1]);
+        // And for a non-Anthropic id, only at the same moment.
+        let mut a = cand(1, 0, 100, 5);
+        a.anthropic = false;
+        let mut b = a;
+        b.ts = 1;
+        assert_eq!(dedupe(&[a, b]), [0, 1]);
+        assert_eq!(dedupe(&[a, a]), [0]);
+    }
+
+    #[test]
+    fn a_sidechain_replaying_a_message_is_not_counted_again() {
+        let main = cand(1, 7, 100, 5);
+        let mut replay = cand(1, 8, 100, 9);
+        replay.sidechain = true;
+        // A new request id, so no exact match: the replay route catches it, and
+        // the main-chain copy is kept although the replay has more tokens.
+        assert_eq!(dedupe(&[main, replay]), [0]);
+        assert_eq!(dedupe(&[replay, main]), [1]);
+        // Without the sidechain flag both count.
+        let mut other = replay;
+        other.sidechain = false;
+        assert_eq!(dedupe(&[main, other]), [0, 1]);
+        // Nor does a record without a message id ever merge.
+        assert_eq!(dedupe(&[cand(0, 7, 100, 5), cand(0, 7, 100, 5)]), [0, 1]);
     }
 
     #[test]
@@ -1113,15 +1141,6 @@ mod tests {
         assert_eq!(l["uuid-aaaa1111"], "main uuid-aaa");
         assert_eq!(l["uuid-bbbb2222"], "main uuid-bbb");
         assert_eq!(l["uuid-dddd4444"], "account uuid-ddd");
-    }
-
-    #[test]
-    fn the_instances_report_parses_as_ccusage_writes_it() {
-        let raw = r#"{"projects":{"-home-me-code-alpha":[{"date":"2026-09-15","totalCost":1.5,"totalTokens":9,"cacheReadTokens":3,"project":"-home-me-code-alpha","modelBreakdowns":[{"modelName":"claude-opus-5-5","cost":1.5,"inputTokens":1,"outputTokens":2,"cacheReadTokens":3,"cacheCreationTokens":3}]}]},"totals":{}}"#;
-        let r: ProjectsReport = serde_json::from_str(raw).unwrap();
-        let e = &r.projects["-home-me-code-alpha"][0];
-        assert_eq!(e.period, "2026-09-15");
-        assert_eq!(e.model_breakdowns[0].cost, 1.5);
     }
 
     #[test]

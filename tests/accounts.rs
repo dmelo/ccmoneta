@@ -1,9 +1,9 @@
 //! Several Claude accounts under aimux, against a throwaway HOME.
 //!
 //! The sandbox holds an aimux config with two profiles, each logged into its
-//! own account, a fake aimux that reports their limits, and a fake ccusage that
-//! "prices" a config directory at $1 per transcript line, so a split can be
-//! read straight off the dollars.
+//! own account, a fake aimux that reports their limits, and a price list that
+//! makes every turn `turn` writes cost $1, so a split can be read straight off
+//! the dollars.
 
 use std::fs;
 use std::io::Write;
@@ -61,20 +61,14 @@ esac
 "#,
         )
         .unwrap();
-        let ccusage = root.join("fake-ccusage");
         fs::write(
-            &ccusage,
-            r#"#!/bin/bash
-case " $* " in *" --instances "*) ;; *) exit 0 ;; esac
-n=$(find "$CLAUDE_CONFIG_DIR/projects" -name '*.jsonl' -exec cat {} + 2>/dev/null | grep -c .)
-printf '{"projects":{"-home-me-code-p":[{"date":"%s","totalCost":%s,"totalTokens":1,"modelBreakdowns":[]}]}}' "$(date +%Y-%m-%d)" "$n"
-"#,
+            root.join("prices.json"),
+            r#"{"m": {"input_cost_per_token": 1, "output_cost_per_token": 0}}"#,
         )
         .unwrap();
         Command::new("chmod")
             .arg("+x")
             .arg(&aimux)
-            .arg(&ccusage)
             .status()
             .unwrap();
         Sandbox { root }
@@ -94,7 +88,10 @@ printf '{"projects":{"-home-me-code-p":[{"date":"%s","totalCost":%s,"totalTokens
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("CCMONETA_AIMUX", self.root.join("fake-aimux"))
-            .env("CCMONETA_CCUSAGE", self.root.join("fake-ccusage"));
+            .env(
+                "CCMONETA_PRICES_URL",
+                format!("file://{}", self.root.join("prices.json").display()),
+            );
         c
     }
 
@@ -115,6 +112,21 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+/// One turn at `at`, worth $1 at the sandbox's prices. Each gets its own ids,
+/// so none is taken for a copy of another.
+fn turn(at: chrono::DateTime<chrono::Utc>) -> String {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!(
+        r#"{{"type":"assistant","timestamp":"{}","requestId":"req_{n}","message":{{"id":"msg_{n}","model":"m","usage":{{"input_tokens":1,"output_tokens":0}}}}}}"#,
+        at.format("%Y-%m-%dT%H:%M:%S%.3fZ")
+    ) + "\n"
+}
+
+fn turns(n: usize, at: chrono::DateTime<chrono::Utc>) -> String {
+    (0..n).map(|_| turn(at)).collect()
 }
 
 fn stdout(o: &Output) -> String {
@@ -182,22 +194,23 @@ fn the_status_line_saves_only_its_own_account() {
 #[test]
 fn spend_is_split_by_the_account_that_ran_each_turn() {
     let sb = Sandbox::new("spend");
-    // The second account opened this session now: the turn from 2020 is the
-    // source account's, the two from an hour ahead are the second's.
+    // The second account opened this session now: the turn from an hour ago is
+    // the source account's, the two from a minute ahead are the second's.
     fs::create_dir_all(sb.home().join(".aimux/profiles/second/session-env/s1")).unwrap();
-    let later = chrono::Utc::now() + chrono::Duration::hours(1);
-    let later = later.to_rfc3339();
+    let now = chrono::Utc::now();
+    let (earlier, later) = (
+        now - chrono::Duration::hours(1),
+        now + chrono::Duration::minutes(1),
+    );
     fs::write(
         sb.home().join(".claude/projects/-home-me-code-p/s1.jsonl"),
-        format!(
-            "{{\"timestamp\":\"2020-01-01T00:00:00Z\"}}\n{{\"timestamp\":\"{later}\"}}\n{{\"timestamp\":\"{later}\"}}\n"
-        ),
+        turn(earlier) + &turns(2, later),
     )
     .unwrap();
     // A session no marker names stays whole with the source account.
     fs::write(
         sb.home().join(".claude/projects/-home-me-code-p/s2.jsonl"),
-        format!("{{\"timestamp\":\"{later}\"}}\n"),
+        turn(later),
     )
     .unwrap();
 
@@ -217,10 +230,10 @@ fn one_account_reads_the_transcripts_in_place() {
     let sb = Sandbox::new("single");
     fs::write(
         sb.home().join(".claude/projects/-home-me-code-p/s1.jsonl"),
-        "{}\n{}\n",
+        turns(2, chrono::Utc::now()),
     )
     .unwrap();
-    // No marker anywhere: nothing to split, so no views are built.
+    // No marker anywhere: every turn is the source account's.
     let o = sb.run(&["refresh", "cost", "--force"]);
     assert!(o.status.success(), "{o:?}");
     assert_eq!(
@@ -296,7 +309,7 @@ fn an_isolated_profile_counts_its_own_transcripts() {
     let sb = Sandbox::new("isolated");
     fs::write(
         sb.home().join(".claude/projects/-home-me-code-p/s1.jsonl"),
-        "{}\n",
+        turn(chrono::Utc::now()),
     )
     .unwrap();
     // `aimux migrate isolate` gives the profile a real projects/ of its own.
@@ -304,7 +317,7 @@ fn an_isolated_profile_counts_its_own_transcripts() {
         .home()
         .join(".aimux/profiles/second/projects/-home-me-code-p");
     fs::create_dir_all(&own).unwrap();
-    fs::write(own.join("s9.jsonl"), "{}\n{}\n{}\n").unwrap();
+    fs::write(own.join("s9.jsonl"), turns(3, chrono::Utc::now())).unwrap();
     let o = sb.run(&["refresh", "cost", "--force"]);
     assert!(o.status.success(), "{o:?}");
     assert_eq!(
@@ -410,25 +423,16 @@ fn a_second_profile_on_the_same_account_credits_that_account() {
         "  twin:\n    cli: claude\n    path: ~/.aimux/profiles/twin\nprivate:",
     );
     fs::write(&config, yaml).unwrap();
-    let later = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     fs::write(
         sb.home().join(".claude/projects/-home-me-code-p/s1.jsonl"),
-        format!("{{\"timestamp\":\"{later}\"}}\n"),
+        turn(chrono::Utc::now() + chrono::Duration::minutes(1)),
     )
     .unwrap();
     let o = sb.run(&["refresh", "cost", "--force"]);
     assert!(o.status.success(), "{o:?}");
-    // The fake ccusage reports an empty view as $0, which real ccusage omits.
-    let spent: Vec<serde_json::Value> = sb.cost()["costs"]["by_account"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|a| a[1].as_f64() != Some(0.0))
-        .cloned()
-        .collect();
     assert_eq!(
-        spent,
-        vec![serde_json::json!(["second", 1.0])],
+        sb.cost()["costs"]["by_account"],
+        serde_json::json!([["second", 1.0]]),
         "twin's session is the second account's, listed once"
     );
 }

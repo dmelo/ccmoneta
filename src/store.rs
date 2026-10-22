@@ -9,8 +9,10 @@
 //!   hosts/<name>/        another machine's mirrored transcripts, with its
 //!                        last-sync, last-attempt and last-error, and markers.tsv,
 //!                        which of its accounts ran each session
-//!   views/<host>/<account>/  that account's part of a host's transcripts, hard
-//!                        links or split copies, rebuilt by each cost run
+//!   ledger.jsonl         every usage record read from the transcripts, and how
+//!                        far each transcript has been read; appended by each
+//!                        cost run, compacted when mostly obsolete (ledger.rs)
+//!   prices.json          the model price list, as downloaded (prices.rs)
 //!   jobs/<job>.json      a job's attempts, failures and backoff; written by that job
 //!   jobs/<job>.spawned   when a surface last started that job; written by surfaces
 //!   locks/<job>.lock     held while a job runs, so each job runs once at a time

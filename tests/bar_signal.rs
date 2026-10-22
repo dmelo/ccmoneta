@@ -3,7 +3,7 @@
 //! The stand-in is a copy of bash under a name nothing else on the machine
 //! uses, so `pkill -x` can only reach it. It traps SIGRTMIN+11 and records
 //! whether it arrived. Everything else runs against a throwaway cache, config
-//! and a fake ccusage.
+//! and a local price list.
 
 use std::fs;
 use std::process::{Command, Stdio};
@@ -24,10 +24,10 @@ fn a_successful_refresh_signals_the_named_bar() {
         format!("[bar]\nsignal = 11\nprogram = \"{FAKE_BAR}\"\n"),
     )
     .unwrap();
-    let ccusage = root.join("fake-ccusage");
+    let prices = root.join("prices.json");
     fs::write(
-        &ccusage,
-        "#!/bin/bash\ncase \"$1 $2\" in \"claude daily\") printf '{\"projects\":{}}';; esac\n",
+        &prices,
+        r#"{"m": {"input_cost_per_token": 1, "output_cost_per_token": 0}}"#,
     )
     .unwrap();
     let handler = root.join("handler.sh");
@@ -38,12 +38,7 @@ fn a_successful_refresh_signals_the_named_bar() {
     .unwrap();
     let bar = root.join(FAKE_BAR);
     fs::copy("/bin/bash", &bar).unwrap();
-    Command::new("chmod")
-        .arg("+x")
-        .arg(&ccusage)
-        .arg(&bar)
-        .status()
-        .unwrap();
+    Command::new("chmod").arg("+x").arg(&bar).status().unwrap();
 
     let out = root.join("out");
     let mut stand_in = Command::new(&bar)
@@ -75,7 +70,10 @@ fn a_successful_refresh_signals_the_named_bar() {
         .env("HOME", root.join("home"))
         .env("XDG_CACHE_HOME", root.join("cache"))
         .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("CCMONETA_CCUSAGE", &ccusage)
+        .env(
+            "CCMONETA_PRICES_URL",
+            format!("file://{}", prices.display()),
+        )
         .status()
         .unwrap();
     assert!(status.success());
