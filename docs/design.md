@@ -137,7 +137,8 @@ Surfaces stay quiet while everything is fine: the bar block and the status line 
 
 `ccmoneta sync [host...]` replaces the bash script. Hosts come from the config file; nothing is named in code.
 
-- For each host: list transcripts modified in the last `sync.days` days over `ssh -o BatchMode=yes`, keep only plain relative paths (no absolute paths, no `..`), fetch them with `rsync --files-from`, then delete local copies no longer in the list. An empty list skips the deletion, since it may mean something went wrong rather than no recent sessions.
+- For each host: list transcripts modified in the last `sync.days` days, with their sizes (`find … -exec wc -c`), over `ssh -o BatchMode=yes`, keep only plain relative paths (no absolute paths, no `..`), fetch them with `rsync --files-from --append-verify`, then delete local copies no longer in the list. An empty list skips the deletion, since it may mean something went wrong rather than no recent sessions.
+- `--append-verify` sends only what was added to a transcript and writes it onto the end of the copy. Plain `rsync -a` sends a changed file whole and writes it out again, so every turn added to a long transcript cost a write of the whole transcript. Claude Code only appends, and when the start of a file does differ, the whole-file check fetches it again. A copy that is not shorter than the remote file is skipped, though, so a copy longer than the remote file is deleted before rsync runs and comes back whole.
 - Each host's directory records `last-attempt` on every try, `last-sync` only on success, and `last-error` on failure, removed by the next success. A failure deletes nothing and leaves `last-sync` as it was; files rsync finished before failing stay updated.
 - ssh runs with `BatchMode=yes`, so it fails rather than prompting, and `ConnectTimeout=10`. It does not force `IdentitiesOnly`, which would lock out keys that exist only in an agent; anything host-specific belongs in `~/.ssh/config`.
 - Requires `ssh` and `rsync` locally and on the remote. macOS's `openrsync` works as the sending side for rsync 3.5.
@@ -219,6 +220,8 @@ Cache: `$XDG_CACHE_HOME/ccmoneta/`, defaulting to `~/.cache/ccmoneta/`.
 - Unit, bar: the i3blocks lines, the Waybar JSON being a single line with the documented keys and classes, the level thresholds, the markers for missing limits and failing spend, and the terminal fallback order.
 - Integration, sync, against a fake remote reached through `CCMONETA_SSH` and real rsync:
   - recent transcripts are mirrored, and copies that aged out or vanished remotely are pruned
+  - a grown transcript is appended to in place, keeping its inode
+  - a transcript rewritten or shrunk remotely is fetched whole
   - an unreachable host leaves the copy and `last-sync` untouched and records the error
   - an empty listing prunes nothing
   - a host named on the command line syncs without a config file, and an unsafe name is refused
