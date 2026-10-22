@@ -1,8 +1,8 @@
 //! Mirroring other machines' transcripts, so their spend is counted here.
 //!
-//! For each host: list the transcripts modified in the last `sync.days` days
-//! over ssh, fetch them with `rsync --files-from`, then delete local copies no
-//! longer in that list. The copy lives in `<cache>/hosts/<name>/`, where cost.rs
+//! For each host: list the transcripts modified in the last `sync.days` days,
+//! with their sizes, over ssh, fetch them with `rsync --files-from
+//! --append-verify`, then delete local copies no longer in that list. The copy lives in `<cache>/hosts/<name>/`, where cost.rs
 //! finds it. See docs/design.md.
 //!
 //! Each sync also records which of the host's Claude accounts ran each session,
@@ -10,7 +10,7 @@
 //! per account like this machine's. That takes a second ssh command, and only
 //! for a host read from the default `~/.claude/projects`.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
@@ -121,28 +121,30 @@ pub fn due_hosts(cfg: &Config, now: i64) -> Vec<Target> {
         .collect()
 }
 
-/// The remote `find` output reduced to plain relative paths, sorted and unique.
+/// The remote listing, `wc -c` lines of a size and a path, reduced to plain
+/// relative paths and their sizes, sorted.
 ///
 /// These names are handed to rsync and compared with local files before
 /// anything is deleted, so only `./`-relative paths with no `..` component are
-/// kept, whatever the remote printed.
-pub fn filter_listing(text: &str) -> Vec<String> {
-    let kept: BTreeSet<String> = text
-        .lines()
-        .filter(|l| l.starts_with("./"))
-        .filter(|l| !l.split('/').any(|c| c == ".."))
-        .map(String::from)
-        .collect();
-    kept.into_iter().collect()
+/// kept, whatever the remote printed. That also drops wc's `total` lines.
+pub fn filter_listing(text: &str) -> BTreeMap<String, u64> {
+    text.lines()
+        .filter_map(|l| {
+            let (size, path) = l.trim_start().split_once(' ')?;
+            Some((path, size.parse().ok()?))
+        })
+        .filter(|(path, _)| path.starts_with("./"))
+        .filter(|(path, _)| !path.split('/').any(|c| c == ".."))
+        .map(|(path, size)| (path.to_string(), size))
+        .collect()
 }
 
 /// Local copies absent from the remote list. The names come from the local
 /// walk, so nothing outside the copy can be named.
-pub fn stale_files(local: &[String], remote: &[String]) -> Vec<String> {
-    let remote: BTreeSet<&str> = remote.iter().map(String::as_str).collect();
+pub fn stale_files(local: &[String], remote: &BTreeMap<String, u64>) -> Vec<String> {
     local
         .iter()
-        .filter(|p| !remote.contains(p.as_str()))
+        .filter(|p| !remote.contains_key(p.as_str()))
         .cloned()
         .collect()
 }
@@ -319,7 +321,7 @@ fn fetch_and_prune(t: &Target, days: i64, dir: &Path, dest: &Path) -> Result<Rep
         .args(SSH_OPTS)
         .arg(&t.ssh)
         .arg(format!(
-            "cd {} && find . -name '*.jsonl' -mtime -{days}",
+            "cd {} && find . -name '*.jsonl' -mtime -{days} -exec wc -c {{}} +",
             remote_cd(&t.remote_dir)
         ))
         .stdin(Stdio::null())
@@ -336,14 +338,34 @@ fn fetch_and_prune(t: &Target, days: i64, dir: &Path, dest: &Path) -> Result<Rep
     let remote = filter_listing(&String::from_utf8_lossy(&listing.stdout));
 
     let list = dir.join(format!(".files.{}", std::process::id()));
-    let body: String = remote.iter().map(|p| format!("{p}\n")).collect();
+    let body: String = remote.keys().map(|p| format!("{p}\n")).collect();
     fs::write(&list, body).map_err(|e| format!("writing {}: {e}", list.display()))?;
     let rsh = std::iter::once(ssh_program().to_string_lossy().into_owned())
         .chain(SSH_OPTS.iter().map(|s| s.to_string()))
         .collect::<Vec<_>>()
         .join(" ");
+    // Claude Code only appends to a transcript, so rsync sends just what was
+    // added and writes it onto the end of the copy, instead of sending a
+    // changed file whole and writing it out again. --append-verify still
+    // checks the whole file and fetches it again when the start differs, but
+    // it skips a copy not shorter than the remote file: one that shrank is
+    // deleted here first, so it comes back whole.
+    let mut shrunk = 0;
+    for (p, size) in &remote {
+        let copy = dest.join(p);
+        if fs::metadata(&copy).is_ok_and(|m| m.len() > *size) && fs::remove_file(&copy).is_ok() {
+            shrunk += 1;
+        }
+    }
+    if shrunk > 0 {
+        store::log(&format!(
+            "sync {}: {shrunk} transcripts shrank remotely, fetching them whole",
+            t.name
+        ));
+    }
     let fetched = Command::new("rsync")
         .arg("-a")
+        .arg("--append-verify")
         .arg(format!("--files-from={}", list.display()))
         .arg("-e")
         .arg(&rsh)
@@ -482,15 +504,19 @@ mod tests {
 
     #[test]
     fn listing_keeps_only_plain_relative_paths() {
-        let text = "./a/1.jsonl\n./b/c/2.jsonl\n../escape.jsonl\n./x/../../y.jsonl\n/etc/passwd\nnoise\n./a/1.jsonl\n";
-        assert_eq!(filter_listing(text), vec!["./a/1.jsonl", "./b/c/2.jsonl"]);
+        let text = "  12 ./a/1.jsonl\n3 ./b/c/2 x.jsonl\n5 ../escape.jsonl\n5 ./x/../../y.jsonl\n5 /etc/passwd\nnoise\n./bare.jsonl\nbig ./n.jsonl\n  20 total\n";
+        let kept: Vec<(String, u64)> = filter_listing(text).into_iter().collect();
+        assert_eq!(
+            kept,
+            vec![("./a/1.jsonl".into(), 12), ("./b/c/2 x.jsonl".into(), 3)]
+        );
         assert!(filter_listing("").is_empty());
     }
 
     #[test]
     fn stale_files_are_local_ones_missing_remotely() {
         let local = vec!["./a.jsonl".to_string(), "./gone.jsonl".to_string()];
-        let remote = vec!["./a.jsonl".to_string(), "./new.jsonl".to_string()];
+        let remote = BTreeMap::from([("./a.jsonl".to_string(), 1), ("./new.jsonl".to_string(), 1)]);
         assert_eq!(stale_files(&local, &remote), vec!["./gone.jsonl"]);
     }
 

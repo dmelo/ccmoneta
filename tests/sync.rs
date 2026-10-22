@@ -175,6 +175,63 @@ fn recent_transcripts_are_mirrored_and_aged_out_copies_pruned() {
     assert!(!sb.copy("laptop", "last-error").exists());
 }
 
+fn inode(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).unwrap().ino()
+}
+
+fn synced(sb: &Sandbox) {
+    let out = sb.sync(&[], &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_grown_transcript_is_appended_to_in_place() {
+    let Some(sb) = Sandbox::new("append") else {
+        return;
+    };
+    sb.config(LAPTOP);
+    put(&sb.remote("p1/s.jsonl"), "a\n");
+    synced(&sb);
+    let copy = sb.copy("laptop", "projects/p1/s.jsonl");
+    let before = inode(&copy);
+
+    put(&sb.remote("p1/s.jsonl"), "a\nb\n");
+    synced(&sb);
+    assert_eq!(fs::read_to_string(&copy).unwrap(), "a\nb\n");
+    // Without --append rsync writes a new file and renames it over the copy.
+    assert_eq!(inode(&copy), before, "written onto, not replaced");
+}
+
+#[test]
+fn a_transcript_rewritten_or_shrunk_remotely_is_fetched_whole() {
+    let Some(sb) = Sandbox::new("rewrite") else {
+        return;
+    };
+    sb.config(LAPTOP);
+    put(&sb.remote("p1/longer.jsonl"), "a\n");
+    put(&sb.remote("p1/shorter.jsonl"), "a\nb\nc\n");
+    synced(&sb);
+
+    put(&sb.remote("p1/longer.jsonl"), "x\ny\n");
+    put(&sb.remote("p1/shorter.jsonl"), "x\n");
+    synced(&sb);
+    assert_eq!(
+        fs::read_to_string(sb.copy("laptop", "projects/p1/longer.jsonl")).unwrap(),
+        "x\ny\n",
+        "--append-verify catches a changed start"
+    );
+    assert_eq!(
+        fs::read_to_string(sb.copy("laptop", "projects/p1/shorter.jsonl")).unwrap(),
+        "x\n",
+        "--append alone skips a copy longer than the remote file"
+    );
+}
+
 #[test]
 fn an_unreachable_host_leaves_the_copy_and_records_why() {
     let Some(sb) = Sandbox::new("unreachable") else {
